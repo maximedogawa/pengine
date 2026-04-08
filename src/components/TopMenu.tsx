@@ -1,29 +1,16 @@
 import * as Menubar from "@radix-ui/react-menubar";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { useAppSessionStore } from "../stores/appSessionStore";
 
-type TopMenuProps = {
-  ctaLabel: string;
-  ctaTo: string;
-  ctaVariant?: "primary" | "secondary";
-  showNavigationLinks?: boolean;
-};
-
-const menuItems = [
-  { label: "How it works", href: "/#how" },
-  { label: "Spec", href: "/#spec" },
-  { label: "Roadmap", href: "/#roadmap" },
+const navLinks = [
+  { label: "Home", to: "/" },
+  { label: "Dashboard", to: "/dashboard" },
 ];
 
-export function TopMenu({
-  ctaLabel,
-  ctaTo,
-  ctaVariant = "secondary",
-  showNavigationLinks = true,
-}: TopMenuProps) {
-  const ctaClass =
-    ctaVariant === "primary"
-      ? "primary-button rounded-xl px-4 py-2 text-xs"
-      : "secondary-button rounded-xl px-4 py-2 text-xs text-slate-200";
+export function TopMenu() {
+  const location = useLocation();
+  const isDeviceConnected = useAppSessionStore((s) => s.isDeviceConnected);
+  const showOpenSetup = !isDeviceConnected && location.pathname !== "/setup";
 
   return (
     <header className="section-shell sticky top-0 z-40 pt-2 sm:pt-3">
@@ -45,28 +32,28 @@ export function TopMenu({
           </div>
         </Link>
 
-        {showNavigationLinks ? (
-          <Menubar.Root className="hidden items-center gap-2 md:flex" aria-label="Main menu">
-            {menuItems.map((item) => (
-              <Menubar.Menu key={item.label}>
-                <Menubar.Trigger asChild>
-                  <a
-                    href={item.href}
-                    className="rounded-lg px-3 py-2 font-mono text-xs uppercase tracking-[0.14em] text-(--mid) outline-none transition hover:text-slate-100 data-highlighted:bg-white/5 data-highlighted:text-slate-100"
-                  >
-                    {item.label}
-                  </a>
-                </Menubar.Trigger>
-              </Menubar.Menu>
-            ))}
-          </Menubar.Root>
+        <Menubar.Root className="hidden items-center gap-2 md:flex" aria-label="Main menu">
+          {navLinks.map((item) => (
+            <Menubar.Menu key={item.label}>
+              <Menubar.Trigger asChild>
+                <Link
+                  to={item.to}
+                  className="rounded-lg px-3 py-2 font-mono text-xs uppercase tracking-[0.14em] text-(--mid) outline-none transition hover:text-slate-100 data-highlighted:bg-white/5 data-highlighted:text-slate-100"
+                >
+                  {item.label}
+                </Link>
+              </Menubar.Trigger>
+            </Menubar.Menu>
+          ))}
+        </Menubar.Root>
+
+        {showOpenSetup ? (
+          <Link to="/setup" className="primary-button rounded-xl px-4 py-2 text-xs">
+            Open setup
+          </Link>
         ) : (
           <div className="hidden min-h-9 md:block" />
         )}
-
-        <Link to={ctaTo} className={ctaClass}>
-          {ctaLabel}
-        </Link>
       </div>
     </header>
   );

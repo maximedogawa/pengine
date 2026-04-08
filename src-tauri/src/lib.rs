@@ -18,9 +18,8 @@ async fn get_connection_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.connection.lock().await;
-    let running = *state.bot_running.lock().await;
     Ok(serde_json::json!({
-        "connected": conn.is_some() && running,
+        "connected": conn.is_some(),
         "bot_username": conn.as_ref().map(|c| &c.bot_username),
         "bot_id": conn.as_ref().map(|c| &c.bot_id),
     }))

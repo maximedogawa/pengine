@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PENGINE_API_BASE } from "../config";
 
 type LogLine = { timestamp: string; kind: string; message: string };
-
-const PENGINE_API = "http://127.0.0.1:21516";
 
 const fallbackLines: LogLine[] = [
   { timestamp: "00:00:00", kind: "ok", message: "Waiting for Pengine service…" },
@@ -44,7 +43,7 @@ export function TerminalPreview() {
 
       // Browser fallback: SSE stream from the loopback API
       try {
-        const es = new EventSource(`${PENGINE_API}/v1/logs`);
+        const es = new EventSource(`${PENGINE_API_BASE}/v1/logs`);
         es.onmessage = (event) => {
           if (cancelled) return;
           try {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SETUP_STEPS, SetupWizard } from "../components/SetupWizard";
 import { TerminalPreview } from "../components/TerminalPreview";
@@ -28,14 +28,7 @@ export function SetupPage() {
   const [activeStep, setActiveStep] = useState(0);
   const currentStep = SETUP_STEPS[activeStep];
   const navigate = useNavigate();
-  const isDeviceConnected = useAppSessionStore((state) => state.isDeviceConnected);
   const connectDevice = useAppSessionStore((state) => state.connectDevice);
-
-  useEffect(() => {
-    if (isDeviceConnected) {
-      navigate("/dashboard", { replace: true });
-    }
-  }, [isDeviceConnected, navigate]);
 
   const handleCompleteSetup = () => {
     connectDevice();
@@ -43,8 +36,8 @@ export function SetupPage() {
   };
 
   return (
-    <div className="relative overflow-x-hidden pb-20">
-      <TopMenu ctaLabel="Back to overview" ctaTo="/" showNavigationLinks={false} />
+    <div className="relative overflow-x-clip pb-20">
+      <TopMenu />
 
       <main className="page-main">
         <SetupWizard onStepChange={setActiveStep} onCompleteSetup={handleCompleteSetup} />

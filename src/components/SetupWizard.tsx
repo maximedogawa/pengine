@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { WizardLayout } from "./WizardLayout";
+import { PENGINE_API_BASE } from "../config";
 import { StyledQrCode } from "./StyledQrCode";
-
-const PENGINE_API = "http://127.0.0.1:21516";
+import { WizardLayout } from "./WizardLayout";
 
 export const SETUP_STEPS = [
   {
@@ -94,7 +93,7 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
   const checkPengineHealth = useCallback(async () => {
     setPengineChecking(true);
     try {
-      const resp = await fetch(`${PENGINE_API}/v1/health`, { signal: AbortSignal.timeout(3000) });
+      const resp = await fetch(`${PENGINE_API_BASE}/v1/health`, { signal: AbortSignal.timeout(3000) });
       if (resp.ok) {
         setPengineReachable(true);
       } else {
@@ -117,7 +116,7 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
     setConnectStatus("connecting");
     setConnectError("");
     try {
-      const resp = await fetch(`${PENGINE_API}/v1/connect`, {
+      const resp = await fetch(`${PENGINE_API_BASE}/v1/connect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bot_token: botToken.trim() }),
@@ -139,7 +138,7 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
     }
   }, [botToken]);
 
-  const connectionUri = `${PENGINE_API}/v1/connect`;
+  const connectionUri = `${PENGINE_API_BASE}/v1/connect`;
   const connectionPayload = JSON.stringify({ bot_token: botToken.trim() }, null, 2);
 
   const handleCopyUri = useCallback(async () => {
@@ -269,7 +268,7 @@ ollama pull llama3.2`}</code>
             </p>
             <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4 font-mono text-xs text-(--mid)">
               <p>
-                Checking <code className="text-slate-300">{PENGINE_API}/v1/health</code>…
+                Checking <code className="text-slate-300">{PENGINE_API_BASE}/v1/health</code>…
               </p>
             </div>
             {pengineChecking && (

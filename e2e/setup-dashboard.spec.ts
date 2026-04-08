@@ -1,6 +1,5 @@
 import { expect, test } from "@playwright/test";
-
-const PENGINE_API = "http://127.0.0.1:21516";
+import { PENGINE_API_BASE } from "../src/config";
 
 const CONNECTED_STORAGE_STATE = {
   state: {
@@ -16,7 +15,7 @@ const CONNECTED_STORAGE_STATE = {
  * Tauri backend. Each test that needs it calls this helper.
  */
 async function mockPengineApi(page: import("@playwright/test").Page) {
-  await page.route(`${PENGINE_API}/v1/health`, async (route) => {
+  await page.route(`${PENGINE_API_BASE}/v1/health`, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -28,7 +27,7 @@ async function mockPengineApi(page: import("@playwright/test").Page) {
     });
   });
 
-  await page.route(`${PENGINE_API}/v1/connect`, async (route) => {
+  await page.route(`${PENGINE_API_BASE}/v1/connect`, async (route) => {
     if (route.request().method() === "POST") {
       await route.fulfill({
         status: 200,
@@ -52,14 +51,13 @@ async function mockPengineApi(page: import("@playwright/test").Page) {
 }
 
 test.describe("setup to dashboard flow", () => {
-  test("redirects dashboard to setup when disconnected", async ({ page }) => {
+  test("shows 'no device' on dashboard when disconnected", async ({ page }) => {
     await page.goto("/dashboard");
     await expect(page.getByTestId("app-ready")).toBeVisible();
 
-    await expect(page).toHaveURL(/\/setup$/);
-    await expect(
-      page.getByRole("heading", { name: "Create your Telegram bot", exact: true }),
-    ).toBeVisible();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByText("No device connected")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Go to setup" })).toBeVisible();
   });
 
   test("walks all setup wizard steps and opens dashboard", async ({ page }) => {

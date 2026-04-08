@@ -1,9 +1,9 @@
 use crate::state::AppState;
+use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::Me;
 use teloxide::utils::command::BotCommands;
 use tokio::sync::Notify;
-use std::sync::Arc;
 
 pub async fn verify_token(token: &str) -> Result<Me, String> {
     let bot = Bot::new(token);
@@ -16,7 +16,9 @@ pub async fn start_bot(state: AppState, token: String, shutdown: Arc<Notify>) {
     let bot = Bot::new(&token);
     let state_clone = state.clone();
 
-    state.emit_log("ok", "Telegram bot starting long poll…").await;
+    state
+        .emit_log("ok", "Telegram bot starting long poll…")
+        .await;
 
     let handler = Update::filter_message()
         .branch(
@@ -37,7 +39,10 @@ pub async fn start_bot(state: AppState, token: String, shutdown: Arc<Notify>) {
         let shutdown = shutdown.clone();
         async move {
             shutdown.notified().await;
-            shutdown_token.shutdown().expect("dispatcher shutdown").await;
+            shutdown_token
+                .shutdown()
+                .expect("dispatcher shutdown")
+                .await;
         }
     });
 
@@ -45,7 +50,9 @@ pub async fn start_bot(state: AppState, token: String, shutdown: Arc<Notify>) {
         let mut running = state.bot_running.lock().await;
         *running = true;
     }
-    state.emit_log("ok", "Telegram bot connected and polling").await;
+    state
+        .emit_log("ok", "Telegram bot connected and polling")
+        .await;
 
     dispatcher.dispatch().await;
 
@@ -73,11 +80,15 @@ async fn command_handler(
 ) -> ResponseResult<()> {
     let text = match cmd {
         BotCommand::Start => {
-            state.emit_log("msg", &format!("/start from {}", user_label(&msg))).await;
+            state
+                .emit_log("msg", &format!("/start from {}", user_label(&msg)))
+                .await;
             "Howdy, how are you doing? Pengine is ready.".to_string()
         }
         BotCommand::Help => {
-            state.emit_log("msg", &format!("/help from {}", user_label(&msg))).await;
+            state
+                .emit_log("msg", &format!("/help from {}", user_label(&msg)))
+                .await;
             "Send me any message and I'll echo it back. Pengine POC.".to_string()
         }
     };
@@ -85,18 +96,60 @@ async fn command_handler(
     Ok(())
 }
 
-async fn text_handler(_bot: Bot, msg: Message, state: AppState) -> ResponseResult<()> {
+async fn text_handler(bot: Bot, msg: Message, state: AppState) -> ResponseResult<()> {
     let incoming = msg.text().unwrap_or("<non-text>");
     state
         .emit_log("msg", &format!("from {}: {}", user_label(&msg), incoming))
         .await;
+
+    match active_ollama_model().await {
+        Ok(model) => {
+            state
+                .emit_log("tool", &format!("routing to ollama → {model}"))
+                .await;
+            match ask_ollama(&model, incoming).await {
+                Ok(reply) => {
+                    state.emit_log("reply", &format!("→ {reply}")).await;
+                    bot.send_message(msg.chat.id, &reply).await?;
+                }
+                Err(e) => {
+                    state.emit_log("run", &format!("ollama error: {e}")).await;
+                }
+            }
+        }
+        Err(e) => {
+            state
+                .emit_log("run", &format!("no ollama model available: {e}"))
+                .await;
+        }
+    }
+
     Ok(())
 }
 
-#[allow(dead_code)]
-async fn try_ollama(prompt: &str) -> Result<String, String> {
+async fn active_ollama_model() -> Result<String, String> {
+    let resp = reqwest::Client::new()
+        .get("http://localhost:11434/api/tags")
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("ollama unreachable: {e}"))?;
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let models = body["models"]
+        .as_array()
+        .ok_or("no models array in /api/tags")?;
+
+    models
+        .first()
+        .and_then(|m| m["name"].as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "no models pulled in ollama".to_string())
+}
+
+async fn ask_ollama(model: &str, prompt: &str) -> Result<String, String> {
     let payload = serde_json::json!({
-        "model": "llama3.2",
+        "model": model,
         "messages": [{"role": "user", "content": format!("Think fast and answer extremely short. If you don't know the answer, say you don't know. Question: {prompt}")}],
         "stream": false,
     });
@@ -113,7 +166,7 @@ async fn try_ollama(prompt: &str) -> Result<String, String> {
     body["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "unexpected Ollama response shape".to_string())
+        .ok_or_else(|| "unexpected ollama response shape".to_string())
 }
 
 fn user_label(msg: &Message) -> String {

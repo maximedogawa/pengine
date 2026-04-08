@@ -52,14 +52,42 @@ pub async fn start_server(state: AppState) {
         .with_state(state.clone());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT));
+
+    let listener = retry_bind(addr, &state).await;
     state
         .emit_log("ok", &format!("HTTP API listening on http://{addr}"))
         .await;
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind loopback port");
     axum::serve(listener, app).await.expect("axum serve failed");
+}
+
+async fn retry_bind(
+    addr: std::net::SocketAddr,
+    state: &AppState,
+) -> tokio::net::TcpListener {
+    const MAX_ATTEMPTS: u32 = 10;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => return listener,
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                state
+                    .emit_log(
+                        "run",
+                        &format!(
+                            "Port {addr} in use, retrying ({attempt}/{MAX_ATTEMPTS})… {e}"
+                        ),
+                    )
+                    .await;
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(e) => {
+                panic!("failed to bind {addr} after {MAX_ATTEMPTS} attempts: {e}");
+            }
+        }
+    }
+    unreachable!()
 }
 
 async fn handle_connect(
@@ -76,14 +104,13 @@ async fn handle_connect(
         ));
     }
 
-    state.emit_log("run", "Verifying token with Telegram…").await;
+    state
+        .emit_log("run", "Verifying token with Telegram…")
+        .await;
 
-    let me = telegram_service::verify_token(&token).await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse { error: e }),
-        )
-    })?;
+    let me = telegram_service::verify_token(&token)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(ErrorResponse { error: e })))?;
 
     let bot_id = me.id.to_string();
     let bot_username = me.username().to_string();
@@ -156,14 +183,11 @@ async fn handle_disconnect(
     ))
 }
 
-async fn handle_health(
-    State(state): State<AppState>,
-) -> Json<HealthResponse> {
+async fn handle_health(State(state): State<AppState>) -> Json<HealthResponse> {
     let conn = state.connection.lock().await;
-    let running = *state.bot_running.lock().await;
     Json(HealthResponse {
         status: "ok".into(),
-        bot_connected: conn.is_some() && running,
+        bot_connected: conn.is_some(),
         bot_username: conn.as_ref().map(|c| c.bot_username.clone()),
     })
 }
@@ -178,15 +202,14 @@ async fn handle_logs_sse(
             .subscribe()
     };
 
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| {
-        match result {
+    let stream =
+        tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|result| match result {
             Ok(entry) => {
                 let json = serde_json::to_string(&entry).unwrap_or_default();
                 Some(Ok(axum::response::sse::Event::default().data(json)))
             }
             Err(_) => None,
-        }
-    });
+        });
 
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()

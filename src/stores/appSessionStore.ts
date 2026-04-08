@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-
-const PENGINE_API = "http://127.0.0.1:21516";
+import { PENGINE_API_BASE } from "../config";
 
 type AppSessionState = {
   isDeviceConnected: boolean;
@@ -27,7 +26,7 @@ export const useAppSessionStore = create<AppSessionState>()(
 
       disconnectDevice: async () => {
         try {
-          await fetch(`${PENGINE_API}/v1/connect`, {
+          await fetch(`${PENGINE_API_BASE}/v1/connect`, {
             method: "DELETE",
             signal: AbortSignal.timeout(5000),
           });

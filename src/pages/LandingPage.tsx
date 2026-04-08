@@ -104,8 +104,8 @@ const specCards = [
 
 export function LandingPage() {
   return (
-    <div className="relative overflow-x-hidden pb-20">
-      <TopMenu ctaLabel="Open setup" ctaTo="/setup" ctaVariant="primary" />
+    <div className="relative overflow-x-clip pb-20">
+      <TopMenu />
 
       <main className="page-main">
         <section className="grid items-start gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-8 lg:items-center">

@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { TerminalPreview } from "../components/TerminalPreview";
 import { TopMenu } from "../components/TopMenu";
+import { PENGINE_API_BASE } from "../config";
 import { useAppSessionStore } from "../stores/appSessionStore";
-
-const PENGINE_API = "http://127.0.0.1:21516";
 
 type ServiceInfo = {
   name: string;
@@ -14,6 +13,7 @@ type ServiceInfo = {
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const isDeviceConnected = useAppSessionStore((state) => state.isDeviceConnected);
   const disconnectDevice = useAppSessionStore((state) => state.disconnectDevice);
   const botUsername = useAppSessionStore((state) => state.botUsername);
   const [services, setServices] = useState<ServiceInfo[]>([
@@ -28,7 +28,7 @@ export function DashboardPage() {
     let pengineUp = false;
 
     try {
-      const resp = await fetch(`${PENGINE_API}/v1/health`, {
+      const resp = await fetch(`${PENGINE_API_BASE}/v1/health`, {
         signal: AbortSignal.timeout(3000),
       });
       if (resp.ok) {
@@ -82,8 +82,8 @@ export function DashboardPage() {
   };
 
   return (
-    <div className="relative overflow-x-hidden pb-20">
-      <TopMenu ctaLabel="Project overview" ctaTo="/" showNavigationLinks={false} />
+    <div className="relative overflow-x-clip pb-20">
+      <TopMenu />
 
       <main className="section-shell pt-10">
         <section className="max-w-4xl">
@@ -135,26 +135,45 @@ export function DashboardPage() {
           <div className="grid gap-6">
             <div className="panel rounded-4xl p-6">
               <p className="mono-label">Device session</p>
-              <p className="mt-3 text-lg font-semibold text-white">1 connected device</p>
-              <p className="mt-2 subtle-copy">
-                Telegram messaging is active and local runtime services are
-                available.
-              </p>
+              {isDeviceConnected ? (
+                <>
+                  <p className="mt-3 text-lg font-semibold text-white">1 connected device</p>
+                  <p className="mt-2 subtle-copy">
+                    Telegram messaging is active and local runtime services are
+                    available.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="mt-3 text-lg font-semibold text-white">No device connected</p>
+                  <p className="mt-2 subtle-copy">
+                    Run through the setup wizard to connect your Telegram bot.
+                  </p>
+                  <Link
+                    to="/setup"
+                    className="primary-button mt-5 inline-block rounded-xl px-5 py-2 text-xs"
+                  >
+                    Go to setup
+                  </Link>
+                </>
+              )}
             </div>
 
-            <div className="panel p-6">
-              <p className="mono-label">Controls</p>
-              <p className="mt-3 subtle-copy">
-                Disconnect the current device session and return to setup.
-              </p>
-              <button
-                type="button"
-                className="secondary-button mt-5 w-full rounded-xl border-rose-300/30 bg-rose-300/10 text-rose-100 hover:bg-rose-300/15"
-                onClick={handleDisconnect}
-              >
-                Disconnect device
-              </button>
-            </div>
+            {isDeviceConnected && (
+              <div className="panel p-6">
+                <p className="mono-label">Controls</p>
+                <p className="mt-3 subtle-copy">
+                  Disconnect the current device session and return to setup.
+                </p>
+                <button
+                  type="button"
+                  className="secondary-button mt-5 w-full rounded-xl border-rose-300/30 bg-rose-300/10 text-rose-100 hover:bg-rose-300/15"
+                  onClick={handleDisconnect}
+                >
+                  Disconnect device
+                </button>
+              </div>
+            )}
           </div>
         </section>
       </main>
