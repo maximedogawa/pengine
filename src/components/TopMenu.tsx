@@ -1,33 +1,20 @@
 import * as Menubar from "@radix-ui/react-menubar";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { useAppSessionStore } from "../stores/appSessionStore";
 
-type TopMenuProps = {
-  ctaLabel: string;
-  ctaTo: string;
-  ctaVariant?: "primary" | "secondary";
-  showNavigationLinks?: boolean;
-};
-
-const menuItems = [
-  { label: "How it works", href: "/#how" },
-  { label: "Spec", href: "/#spec" },
-  { label: "Roadmap", href: "/#roadmap" },
+const navLinks = [
+  { label: "Home", to: "/" },
+  { label: "Dashboard", to: "/dashboard" },
 ];
 
-export function TopMenu({
-  ctaLabel,
-  ctaTo,
-  ctaVariant = "secondary",
-  showNavigationLinks = true,
-}: TopMenuProps) {
-  const ctaClass =
-    ctaVariant === "primary"
-      ? "primary-button rounded-xl px-4 py-2 text-xs"
-      : "secondary-button rounded-xl px-4 py-2 text-xs text-slate-200";
+export function TopMenu() {
+  const location = useLocation();
+  const isDeviceConnected = useAppSessionStore((s) => s.isDeviceConnected);
+  const showOpenSetup = !isDeviceConnected && location.pathname !== "/setup";
 
   return (
     <header className="section-shell sticky top-0 z-40 pt-2 sm:pt-3">
-      <div className="flex min-h-[3.25rem] items-center justify-between rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2 sm:px-4 sm:py-2.5 backdrop-blur">
+      <div className="flex min-h-13 items-center justify-between rounded-2xl border border-white/10 bg-slate-950/70 px-3 py-2 sm:px-4 sm:py-2.5 backdrop-blur">
         <Link to="/" className="flex items-center gap-3">
           <img
             src="/pengine-logo-64.png"
@@ -45,27 +32,28 @@ export function TopMenu({
           </div>
         </Link>
 
-        {showNavigationLinks ? (
-          <Menubar.Root className="hidden items-center gap-2 md:flex" aria-label="Main menu">
-            {menuItems.map((item) => (
-              <Menubar.Menu key={item.label}>
-                <Menubar.Trigger asChild>
-                  <a
-                    href={item.href}
-                    className="rounded-lg px-3 py-2 font-mono text-xs uppercase tracking-[0.14em] text-(--mid) outline-none transition hover:text-slate-100 data-highlighted:bg-white/5 data-highlighted:text-slate-100"
-                  >
-                    {item.label}
-                  </a>
-                </Menubar.Trigger>
-              </Menubar.Menu>
-            ))}
-          </Menubar.Root>
-        ) : (
-          <div className="hidden min-h-9 md:block" />
-        )}
+        <Menubar.Root className="hidden items-center gap-2 md:flex" aria-label="Main menu">
+          {navLinks.map((item) => (
+            <Menubar.Menu key={item.label}>
+              <Menubar.Trigger asChild>
+                <Link
+                  to={item.to}
+                  className="rounded-lg px-3 py-2 font-mono text-xs uppercase tracking-[0.14em] text-(--mid) outline-none transition hover:text-slate-100 data-highlighted:bg-white/5 data-highlighted:text-slate-100"
+                >
+                  {item.label}
+                </Link>
+              </Menubar.Trigger>
+            </Menubar.Menu>
+          ))}
+        </Menubar.Root>
 
-        <Link to={ctaTo} className={ctaClass}>
-          {ctaLabel}
+        <Link
+          to="/setup"
+          className={`primary-button rounded-xl px-4 py-2 text-xs ${showOpenSetup ? "" : "pointer-events-none invisible"}`}
+          tabIndex={showOpenSetup ? undefined : -1}
+          aria-hidden={!showOpenSetup}
+        >
+          Open setup
         </Link>
       </div>
     </header>

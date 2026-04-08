@@ -1,15 +1,13 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SETUP_STEPS, SetupWizard } from "../components/SetupWizard";
 import { TerminalPreview } from "../components/TerminalPreview";
 import { TopMenu } from "../components/TopMenu";
-import { useAppSessionStore } from "../stores/appSessionStore";
-
 const requirements = [
   "Telegram account",
   "Bot token from BotFather",
   "Ollama installed on this machine",
-  "Pengine desktop or web runtime",
+  "Pengine desktop app installed",
 ];
 
 function getFlowCardClasses(index: number, activeStep: number) {
@@ -28,23 +26,14 @@ export function SetupPage() {
   const [activeStep, setActiveStep] = useState(0);
   const currentStep = SETUP_STEPS[activeStep];
   const navigate = useNavigate();
-  const isDeviceConnected = useAppSessionStore((state) => state.isDeviceConnected);
-  const connectDevice = useAppSessionStore((state) => state.connectDevice);
-
-  useEffect(() => {
-    if (isDeviceConnected) {
-      navigate("/dashboard", { replace: true });
-    }
-  }, [isDeviceConnected, navigate]);
 
   const handleCompleteSetup = () => {
-    connectDevice();
     navigate("/dashboard", { replace: true });
   };
 
   return (
-    <div className="relative overflow-x-hidden pb-20">
-      <TopMenu ctaLabel="Back to overview" ctaTo="/" showNavigationLinks={false} />
+    <div className="relative overflow-x-clip pb-20">
+      <TopMenu />
 
       <main className="page-main">
         <SetupWizard onStepChange={setActiveStep} onCompleteSetup={handleCompleteSetup} />
@@ -111,9 +100,8 @@ export function SetupPage() {
               <div className="panel p-5">
                 <p className="mono-label">Runtime note</p>
                 <p className="mt-3 subtle-copy">
-                  Keep this page open while testing the bot. Today it acts as the
-                  setup surface for the runtime, and later the Tauri shell can take
-                  over the always-on part.
+                  The Pengine desktop app must be running for the bot to receive
+                  messages. You can close this browser tab after setup.
                 </p>
               </div>
               <TerminalPreview />

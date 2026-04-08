@@ -1,13 +1,56 @@
-import { useEffect, useState } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { getPengineHealth } from "./loopback";
+import { DashboardPage } from "./pages/DashboardPage";
 import { LandingPage } from "./pages/LandingPage";
 import { SetupPage } from "./pages/SetupPage";
-import { DashboardPage } from "./pages/DashboardPage";
 import { useAppSessionStore } from "./stores/appSessionStore";
+
+/** One-shot: sync dashboard route with persisted session or running local app. */
+function StartupDashboardRedirect() {
+  const navigate = useNavigate();
+  const connectDevice = useAppSessionStore((state) => state.connectDevice);
+  const startupDone = useRef(false);
+
+  useEffect(() => {
+    if (startupDone.current) return;
+    startupDone.current = true;
+
+    const path = window.location.pathname;
+    if (path === "/dashboard") return;
+
+    if (useAppSessionStore.getState().isDeviceConnected) {
+      navigate("/dashboard", { replace: true });
+      return;
+    }
+
+    // Recover session from a running local app only when opening the home page
+    // (skip on /setup so the wizard can load; health mocks in e2e use /setup)
+    if (path !== "/") return;
+
+    let cancelled = false;
+    (async () => {
+      const health = await getPengineHealth(2000);
+      if (!health || cancelled) return;
+      if (health.bot_connected && health.bot_username) {
+        connectDevice({
+          bot_username: health.bot_username,
+          bot_id: health.bot_id ?? null,
+        });
+        navigate("/dashboard", { replace: true });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, connectDevice]);
+
+  return null;
+}
 
 function App() {
   const [sessionReady, setSessionReady] = useState(false);
-  const isDeviceConnected = useAppSessionStore((state) => state.isDeviceConnected);
 
   useEffect(() => {
     if (useAppSessionStore.persist.hasHydrated()) {
@@ -32,13 +75,11 @@ function App() {
 
   return (
     <div data-testid="app-ready">
+      <StartupDashboardRedirect />
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/setup" element={<SetupPage />} />
-        <Route
-          path="/dashboard"
-          element={isDeviceConnected ? <DashboardPage /> : <Navigate to="/setup" replace />}
-        />
+        <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </div>
