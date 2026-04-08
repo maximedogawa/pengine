@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PENGINE_API_BASE } from "../config";
+import { OLLAMA_API_BASE, PENGINE_API_BASE } from "../config";
 import { StyledQrCode } from "./StyledQrCode";
 import { WizardLayout } from "./WizardLayout";
 
@@ -53,6 +53,9 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
   const [step, setStep] = useState(0);
   const [botToken, setBotToken] = useState("");
   const [ollamaAcknowledged, setOllamaAcknowledged] = useState(false);
+  const [ollamaChecking, setOllamaChecking] = useState(false);
+  const [ollamaModel, setOllamaModel] = useState<string | null>(null);
+  const [ollamaReachable, setOllamaReachable] = useState<boolean | null>(null);
   const [pengineReachable, setPengineReachable] = useState<boolean | null>(null);
   const [pengineChecking, setPengineChecking] = useState(false);
   const [connectStatus, setConnectStatus] = useState<
@@ -89,6 +92,52 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
   useEffect(() => {
     onStepChange?.(step);
   }, [onStepChange, step]);
+
+  const checkOllama = useCallback(async () => {
+    setOllamaChecking(true);
+    setOllamaReachable(null);
+    setOllamaModel(null);
+    try {
+      // Check running models first
+      const psResp = await fetch(`${OLLAMA_API_BASE}/api/ps`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (psResp.ok) {
+        const psData = await psResp.json();
+        const loadedModel = psData.models?.[0]?.name;
+        if (loadedModel) {
+          setOllamaReachable(true);
+          setOllamaModel(loadedModel);
+          setOllamaAcknowledged(true);
+          setOllamaChecking(false);
+          return;
+        }
+      }
+      // Fallback: check pulled models
+      const tagsResp = await fetch(`${OLLAMA_API_BASE}/api/tags`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (tagsResp.ok) {
+        setOllamaReachable(true);
+        const tagsData = await tagsResp.json();
+        const firstModel = tagsData.models?.[0]?.name ?? null;
+        setOllamaModel(firstModel);
+        if (firstModel) setOllamaAcknowledged(true);
+      } else {
+        setOllamaReachable(false);
+      }
+    } catch {
+      setOllamaReachable(false);
+    } finally {
+      setOllamaChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (step === 1) {
+      checkOllama();
+    }
+  }, [step, checkOllama]);
 
   const checkPengineHealth = useCallback(async () => {
     setPengineChecking(true);
@@ -228,15 +277,53 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
               <code>{`curl -fsSL https://ollama.com/install.sh | sh
 ollama pull llama3.2`}</code>
             </pre>
-            <button
-              type="button"
-              data-testid="ollama-acknowledge"
-              className="secondary-button mt-4 w-full max-w-md rounded-xl text-xs"
-              onClick={() => setOllamaAcknowledged(true)}
-              disabled={ollamaAcknowledged}
-            >
-              {ollamaAcknowledged ? "Ollama ready" : "I've installed Ollama"}
-            </button>
+
+            {ollamaChecking && (
+              <p className="mt-4 font-mono text-xs text-yellow-300">Detecting Ollama…</p>
+            )}
+
+            {ollamaReachable === true && ollamaModel && (
+              <div className="mt-4 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-4 py-3">
+                <p className="font-mono text-xs text-emerald-300">
+                  Ollama detected — active model:
+                </p>
+                <p className="mt-1 text-lg font-semibold text-white">{ollamaModel}</p>
+              </div>
+            )}
+
+            {ollamaReachable === true && !ollamaModel && (
+              <p className="mt-4 font-mono text-xs text-yellow-300">
+                Ollama is running but no model is pulled yet. Run{" "}
+                <code className="text-slate-200">ollama pull llama3.2</code> first.
+              </p>
+            )}
+
+            {ollamaReachable === false && (
+              <div className="mt-4 space-y-2">
+                <p className="font-mono text-xs text-rose-300">
+                  Could not reach Ollama at {OLLAMA_API_BASE}. Make sure it's installed and running.
+                </p>
+                <button
+                  type="button"
+                  className="secondary-button w-full max-w-md rounded-xl text-xs"
+                  onClick={checkOllama}
+                >
+                  Retry detection
+                </button>
+              </div>
+            )}
+
+            {!ollamaAcknowledged && ollamaReachable !== null && !ollamaChecking && (
+              <button
+                type="button"
+                data-testid="ollama-acknowledge"
+                className="secondary-button mt-4 w-full max-w-md rounded-xl text-xs"
+                onClick={() => setOllamaAcknowledged(true)}
+              >
+                I've installed Ollama
+              </button>
+            )}
+
             {ollamaAcknowledged && (
               <p className="mt-3 font-mono text-xs text-emerald-300">
                 Ready to continue.
@@ -245,11 +332,21 @@ ollama pull llama3.2`}</code>
           </div>
           <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-5">
             <p className="font-mono text-xs uppercase tracking-[0.14em] text-emerald-200">
-              Checklist
+              Ollama status
             </p>
             <ul className="mt-3 list-inside list-disc space-y-2 text-sm text-slate-100">
-              <li>Installer finished without errors</li>
-              <li>At least one model pulled (e.g. llama3.2)</li>
+              <li>
+                Connection:{" "}
+                <span className={ollamaReachable ? "text-emerald-300" : ollamaReachable === false ? "text-rose-300" : "text-slate-400"}>
+                  {ollamaReachable ? "reachable" : ollamaReachable === false ? "not reachable" : "checking…"}
+                </span>
+              </li>
+              <li>
+                Active model:{" "}
+                <span className={ollamaModel ? "text-emerald-300" : "text-slate-400"}>
+                  {ollamaModel ?? "none detected"}
+                </span>
+              </li>
             </ul>
           </div>
         </div>

@@ -2956,7 +2956,6 @@ dependencies = [
  "axum",
  "chrono",
  "env_logger",
- "log",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

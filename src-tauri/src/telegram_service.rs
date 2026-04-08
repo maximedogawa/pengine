@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 
 static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
 
+const OLLAMA_PS_URL: &str = "http://localhost:11434/api/ps";
 const OLLAMA_TAGS_URL: &str = "http://localhost:11434/api/tags";
 const OLLAMA_CHAT_URL: &str = "http://localhost:11434/api/chat";
 
@@ -136,21 +137,37 @@ async fn text_handler(bot: Bot, msg: Message, state: AppState) -> ResponseResult
     Ok(())
 }
 
+/// Returns the currently loaded model (from `/api/ps`), falling back to the
+/// first pulled model (from `/api/tags`) if nothing is loaded yet.
 async fn active_ollama_model() -> Result<String, String> {
-    let resp = http_client()
+    let client = http_client();
+    let timeout = std::time::Duration::from_secs(5);
+
+    // Prefer a model that is already loaded in memory
+    if let Ok(resp) = client.get(OLLAMA_PS_URL).timeout(timeout).send().await {
+        if let Ok(body) = resp.json::<serde_json::Value>().await {
+            if let Some(name) = body["models"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|m| m["name"].as_str())
+            {
+                return Ok(name.to_string());
+            }
+        }
+    }
+
+    // Fallback: first pulled model (Ollama will load it on demand)
+    let resp = client
         .get(OLLAMA_TAGS_URL)
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(timeout)
         .send()
         .await
         .map_err(|e| format!("ollama unreachable: {e}"))?;
 
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let models = body["models"]
+    body["models"]
         .as_array()
-        .ok_or("no models array in /api/tags")?;
-
-    models
-        .first()
+        .and_then(|arr| arr.first())
         .and_then(|m| m["name"].as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "no models pulled in ollama".to_string())

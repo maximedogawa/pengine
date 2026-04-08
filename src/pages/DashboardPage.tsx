@@ -42,11 +42,28 @@ export function DashboardPage() {
     }
 
     let ollamaUp = false;
+    let ollamaModel: string | null = null;
     try {
-      const resp = await fetch(`${OLLAMA_API_BASE}/api/tags`, {
+      // Check for a model currently loaded in memory
+      const psResp = await fetch(`${OLLAMA_API_BASE}/api/ps`, {
         signal: AbortSignal.timeout(2000),
       });
-      ollamaUp = resp.ok;
+      if (psResp.ok) {
+        ollamaUp = true;
+        const psData = await psResp.json();
+        ollamaModel = psData.models?.[0]?.name ?? null;
+      }
+      // Fallback to first pulled model if nothing is loaded yet
+      if (!ollamaModel) {
+        const tagsResp = await fetch(`${OLLAMA_API_BASE}/api/tags`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        if (tagsResp.ok) {
+          ollamaUp = true;
+          const tagsData = await tagsResp.json();
+          ollamaModel = tagsData.models?.[0]?.name ?? null;
+        }
+      }
     } catch {
       // Ollama not reachable
     }
@@ -60,13 +77,17 @@ export function DashboardPage() {
       {
         name: "Pengine runtime",
         status: pengineUp ? "running" : "stopped",
-        detail: pengineUp ? "localhost:21516 reachable" : "App not running",
+        detail: pengineUp
+          ? `${PENGINE_API_BASE.replace(/^https?:\/\//, "")} reachable`
+          : "App not running",
       },
       {
         name: "Ollama",
         status: ollamaUp ? "running" : "stopped",
         detail: ollamaUp
-          ? `${OLLAMA_API_BASE.replace(/^https?:\/\//, "")} reachable`
+          ? ollamaModel
+            ? `model: ${ollamaModel}`
+            : "Running, no model loaded"
           : "Not reachable",
       },
     ]);
