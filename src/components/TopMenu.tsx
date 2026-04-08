@@ -47,13 +47,14 @@ export function TopMenu() {
           ))}
         </Menubar.Root>
 
-        {showOpenSetup ? (
-          <Link to="/setup" className="primary-button rounded-xl px-4 py-2 text-xs">
-            Open setup
-          </Link>
-        ) : (
-          <div className="hidden min-h-9 md:block" />
-        )}
+        <Link
+          to="/setup"
+          className={`primary-button rounded-xl px-4 py-2 text-xs ${showOpenSetup ? "" : "invisible"}`}
+          tabIndex={showOpenSetup ? undefined : -1}
+          aria-hidden={!showOpenSetup}
+        >
+          Open setup
+        </Link>
       </div>
     </header>
   );
