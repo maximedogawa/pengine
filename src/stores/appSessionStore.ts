@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { PENGINE_API_BASE } from "../config";
+import { deleteConnect } from "../loopback";
 
 type AppSessionState = {
   isDeviceConnected: boolean;
@@ -25,14 +25,7 @@ export const useAppSessionStore = create<AppSessionState>()(
         }),
 
       disconnectDevice: async () => {
-        const resp = await fetch(`${PENGINE_API_BASE}/v1/connect`, {
-          method: "DELETE",
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!resp.ok) {
-          const detail = await resp.text().catch(() => "");
-          throw new Error(detail || `Disconnect failed (HTTP ${resp.status})`);
-        }
+        await deleteConnect();
         set({ isDeviceConnected: false, botUsername: null, botId: null });
       },
     }),

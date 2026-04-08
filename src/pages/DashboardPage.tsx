@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { TerminalPreview } from "../components/TerminalPreview";
 import { TopMenu } from "../components/TopMenu";
 import { PENGINE_API_BASE } from "../config";
-import { fetchOllamaModel } from "../ollamaStatus";
+import { fetchOllamaModel, getPengineHealth } from "../loopback";
 import { useAppSessionStore } from "../stores/appSessionStore";
 
 type ServiceInfo = {
@@ -25,23 +25,11 @@ export function DashboardPage() {
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
-    let botConnected = false;
     let botUser = botUsername ?? "unknown";
-    let pengineUp = false;
-
-    try {
-      const resp = await fetch(`${PENGINE_API_BASE}/v1/health`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (resp.ok) {
-        pengineUp = true;
-        const data = await resp.json();
-        botConnected = data.bot_connected;
-        if (data.bot_username) botUser = data.bot_username;
-      }
-    } catch {
-      // Pengine API not reachable (app stopped or wrong port)
-    }
+    const health = await getPengineHealth(3000);
+    const pengineUp = !!health;
+    const botConnected = health?.bot_connected ?? false;
+    if (health?.bot_username) botUser = health.bot_username;
 
     const { reachable: ollamaUp, model: ollamaModel } = await fetchOllamaModel(2000);
 

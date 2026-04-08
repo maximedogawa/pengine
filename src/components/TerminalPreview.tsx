@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PENGINE_API_BASE } from "../config";
+import { PENGINE } from "../loopback";
 
 type LogLine = { timestamp: string; kind: string; message: string };
 
@@ -53,7 +53,7 @@ export function TerminalPreview() {
     const openEventSource = () => {
       if (cancelled) return;
       es?.close();
-      const next = new EventSource(`${PENGINE_API_BASE}/v1/logs`);
+      const next = new EventSource(PENGINE.logs);
       es = next;
 
       next.onopen = () => {

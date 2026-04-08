@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { OLLAMA_API_BASE, PENGINE_API_BASE } from "../config";
-import { fetchOllamaModel } from "../ollamaStatus";
+import { OLLAMA_API_BASE } from "../config";
+import { fetchOllamaModel, getPengineHealth, PENGINE, postConnect } from "../loopback";
 import { useAppSessionStore } from "../stores/appSessionStore";
 import { StyledQrCode } from "./StyledQrCode";
 import { WizardLayout } from "./WizardLayout";
@@ -118,14 +118,7 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
   const checkPengineHealth = useCallback(async () => {
     setPengineChecking(true);
     try {
-      const resp = await fetch(`${PENGINE_API_BASE}/v1/health`, { signal: AbortSignal.timeout(3000) });
-      if (resp.ok) {
-        setPengineReachable(true);
-      } else {
-        setPengineReachable(false);
-      }
-    } catch {
-      setPengineReachable(false);
+      setPengineReachable((await getPengineHealth(3000)) !== null);
     } finally {
       setPengineChecking(false);
     }
@@ -141,14 +134,8 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
     setConnectStatus("connecting");
     setConnectError("");
     try {
-      const resp = await fetch(`${PENGINE_API_BASE}/v1/connect`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bot_token: botToken.trim() }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const data = await resp.json();
-      if (resp.ok) {
+      const { ok, data } = await postConnect(botToken);
+      if (ok && data.bot_id && data.bot_username) {
         setConnectStatus("connected");
         setVerifiedBot({ bot_id: data.bot_id, bot_username: data.bot_username });
         connectDevice({ bot_username: data.bot_username, bot_id: data.bot_id });
@@ -164,7 +151,7 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
     }
   }, [botToken, connectDevice]);
 
-  const connectionUri = `${PENGINE_API_BASE}/v1/connect`;
+  const connectionUri = PENGINE.connect;
   const connectionPayload = JSON.stringify({ bot_token: botToken.trim() }, null, 2);
 
   const handleCopyUri = useCallback(async () => {
@@ -335,7 +322,7 @@ ollama pull llama3.2`}</code>
             </p>
             <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4 font-mono text-xs text-(--mid)">
               <p>
-                Checking <code className="text-slate-300">{PENGINE_API_BASE}/v1/health</code>…
+                Checking <code className="text-slate-300">{PENGINE.health}</code>…
               </p>
             </div>
             {pengineChecking && (

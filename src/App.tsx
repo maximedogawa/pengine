@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { PENGINE_API_BASE } from "./config";
+import { getPengineHealth } from "./loopback";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LandingPage } from "./pages/LandingPage";
 import { SetupPage } from "./pages/SetupPage";
@@ -30,21 +30,14 @@ function StartupDashboardRedirect() {
 
     let cancelled = false;
     (async () => {
-      try {
-        const resp = await fetch(`${PENGINE_API_BASE}/v1/health`, {
-          signal: AbortSignal.timeout(2000),
+      const health = await getPengineHealth(2000);
+      if (!health || cancelled) return;
+      if (health.bot_connected && health.bot_username) {
+        connectDevice({
+          bot_username: health.bot_username,
+          bot_id: health.bot_id ?? null,
         });
-        if (!resp.ok || cancelled) return;
-        const data = await resp.json();
-        if (data.bot_connected && data.bot_username && !cancelled) {
-          connectDevice({
-            bot_username: data.bot_username,
-            bot_id: data.bot_id ?? null,
-          });
-          navigate("/dashboard", { replace: true });
-        }
-      } catch {
-        // local app not running
+        navigate("/dashboard", { replace: true });
       }
     })();
 
