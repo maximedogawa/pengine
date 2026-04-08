@@ -1,0 +1,32 @@
+@utility panel {
+  @apply rounded-3xl border border-white/10 bg-slate-950/55 shadow-[0_20px_80px_rgba(0,0,0,0.35)] backdrop-blur;
+}
+
+@utility section-shell {
+  @apply mx-auto max-w-6xl px-6 lg:px-8;
+}
+
+/* First block below sticky nav — keep landing/setup consistent */
+@utility page-main {
+  @apply section-shell pt-4 sm:pt-5;
+}
+
+@utility mono-label {
+  @apply font-mono text-[0.72rem] uppercase tracking-[0.22em] text-(--yellow);
+}
+
+@utility subtle-copy {
+  @apply font-mono text-sm leading-7 text-(--mid);
+}
+
+@utility primary-button {
+  @apply inline-flex items-center justify-center rounded-2xl border border-yellow-200/40 bg-(--yellow) px-5 py-3 font-mono text-sm font-bold uppercase tracking-[0.12em] text-slate-950! shadow-[4px_4px_0_#9c8400] transition hover:-translate-y-0.5 hover:bg-[#ffe45c] hover:text-slate-950! focus:text-slate-950! active:text-slate-950! visited:text-slate-950!;
+}
+
+@utility secondary-button {
+  @apply inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-5 py-3 font-mono text-sm font-semibold uppercase tracking-[0.12em] text-slate-100 transition hover:border-white/20 hover:bg-white/8;
+}
+
+@utility feature-chip {
+  @apply rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100;
+}

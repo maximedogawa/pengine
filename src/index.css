@@ -1,0 +1,118 @@
+@import "tailwindcss";
+@import "./styles/utilities.css";
+
+@theme {
+  --font-sans:
+    Inter,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    "Noto Sans",
+    sans-serif;
+  --font-serif:
+    ui-serif,
+    Georgia,
+    Cambria,
+    "Times New Roman",
+    Times,
+    serif;
+  --font-mono:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    monospace;
+}
+
+:root {
+  --bg: #0b0e14;
+  --bg2: #111520;
+  --bg3: #161c2c;
+  --border: #1f2a40;
+  --border2: #2a3a58;
+  --cream: #f5f0e8;
+  --yellow: #f5d000;
+  --teal: #00d4aa;
+  --coral: #ff5f6d;
+  --blue: #4f8aff;
+  --dim: #4a5c78;
+  --mid: #7a8fa8;
+  --text: #dce8f5;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background-image: radial-gradient(circle, rgba(42, 58, 88, 0.7) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(0, 212, 170, 0.12), transparent 25%),
+    radial-gradient(circle at 85% 15%, rgba(79, 138, 255, 0.12), transparent 22%),
+    radial-gradient(circle at 50% 100%, rgba(245, 208, 0, 0.07), transparent 28%);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@keyframes floaty {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes pulse-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(0, 212, 170, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(0, 212, 170, 0);
+  }
+}
+
+.logo-float {
+  animation: floaty 5s ease-in-out infinite;
+}
+
+.status-pulse {
+  animation: pulse-ring 2.1s ease-in-out infinite;
+}
