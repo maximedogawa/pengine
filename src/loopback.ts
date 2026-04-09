@@ -25,7 +25,7 @@ export async function fetchOllamaModel(timeoutMs = 3000): Promise<OllamaProbe> {
     });
     if (tagsResp.ok) {
       const tagsData = await tagsResp.json();
-      const first = tagsData.models?.[0]?.name as string | undefined ?? null;
+      const first = (tagsData.models?.[0]?.name as string | undefined) ?? null;
       return { reachable: true, model: first ?? null };
     }
     return { reachable: false, model: null };

@@ -119,7 +119,10 @@ export function TerminalPreview() {
         <span className="h-3 w-3 rounded-full bg-[#28c840]" />
         <p className="ml-2">pengine runtime</p>
       </div>
-      <div ref={scrollRef} className="max-h-64 space-y-3 overflow-y-auto px-4 py-5 font-mono text-sm">
+      <div
+        ref={scrollRef}
+        className="max-h-64 space-y-3 overflow-y-auto px-4 py-5 font-mono text-sm"
+      >
         {lines.map((line, i) => (
           <div key={`${line.timestamp}-${i}`} className="flex flex-wrap items-center gap-2">
             <span className="text-(--dim)">[{line.timestamp}]</span>

@@ -85,8 +85,8 @@ export function DashboardPage() {
             Connected device and running services
           </h1>
           <p className="mt-5 max-w-3xl subtle-copy">
-            The Pengine desktop app is running the bot service. Messages from
-            Telegram are handled locally even when this page is closed.
+            The Pengine desktop app is running the bot service. Messages from Telegram are handled
+            locally even when this page is closed.
           </p>
         </section>
 
@@ -132,8 +132,7 @@ export function DashboardPage() {
                 <>
                   <p className="mt-3 text-lg font-semibold text-white">1 connected device</p>
                   <p className="mt-2 subtle-copy">
-                    Telegram messaging is active and local runtime services are
-                    available.
+                    Telegram messaging is active and local runtime services are available.
                   </p>
                 </>
               ) : (

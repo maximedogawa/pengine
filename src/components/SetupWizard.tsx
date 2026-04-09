@@ -59,9 +59,9 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
   const [ollamaReachable, setOllamaReachable] = useState<boolean | null>(null);
   const [pengineReachable, setPengineReachable] = useState<boolean | null>(null);
   const [pengineChecking, setPengineChecking] = useState(false);
-  const [connectStatus, setConnectStatus] = useState<
-    "idle" | "connecting" | "connected" | "error"
-  >("idle");
+  const [connectStatus, setConnectStatus] = useState<"idle" | "connecting" | "connected" | "error">(
+    "idle",
+  );
   const [connectError, setConnectError] = useState("");
   const [verifiedBot, setVerifiedBot] = useState<{
     bot_id: string;
@@ -182,9 +182,7 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
           <div className="space-y-5">
             <div>
               <p className="mono-label">Step 1</p>
-              <h2 className="mt-2 text-3xl font-extrabold text-white">
-                Create your Telegram bot
-              </h2>
+              <h2 className="mt-2 text-3xl font-extrabold text-white">Create your Telegram bot</h2>
               <p className="mt-3 subtle-copy">
                 Open BotFather, create a new bot, then paste the token here.
               </p>
@@ -198,7 +196,10 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
               Open BotFather
             </a>
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <label htmlFor="token" className="font-mono text-xs uppercase tracking-[0.14em] text-(--mid)">
+              <label
+                htmlFor="token"
+                className="font-mono text-xs uppercase tracking-[0.14em] text-(--mid)"
+              >
                 Bot token
               </label>
               <input
@@ -225,8 +226,8 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
           <div className="panel rounded-4xl p-5">
             <p className="mono-label">Why</p>
             <p className="mt-4 text-sm text-slate-200">
-              The token encodes your <strong className="text-slate-100">bot ID</strong>.
-              Pengine uses that ID to pair with your bot automatically.
+              The token encodes your <strong className="text-slate-100">bot ID</strong>. Pengine
+              uses that ID to pair with your bot automatically.
             </p>
           </div>
         </div>
@@ -282,9 +283,7 @@ ollama pull llama3.2`}</code>
             )}
 
             {ollamaModel && (
-              <p className="mt-3 font-mono text-xs text-emerald-300">
-                Ready to continue.
-              </p>
+              <p className="mt-3 font-mono text-xs text-emerald-300">Ready to continue.</p>
             )}
           </div>
           <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-5">
@@ -294,8 +293,20 @@ ollama pull llama3.2`}</code>
             <ul className="mt-3 list-inside list-disc space-y-2 text-sm text-slate-100">
               <li>
                 Connection:{" "}
-                <span className={ollamaReachable ? "text-emerald-300" : ollamaReachable === false ? "text-rose-300" : "text-slate-400"}>
-                  {ollamaReachable ? "reachable" : ollamaReachable === false ? "not reachable" : "checking…"}
+                <span
+                  className={
+                    ollamaReachable
+                      ? "text-emerald-300"
+                      : ollamaReachable === false
+                        ? "text-rose-300"
+                        : "text-slate-400"
+                  }
+                >
+                  {ollamaReachable
+                    ? "reachable"
+                    : ollamaReachable === false
+                      ? "not reachable"
+                      : "checking…"}
                 </span>
               </li>
               <li>
@@ -316,18 +327,15 @@ ollama pull llama3.2`}</code>
             <p className="mono-label">Step 3</p>
             <h2 className="mt-2 text-3xl font-extrabold text-white">Start Pengine locally</h2>
             <p className="mt-3 subtle-copy">
-              The Pengine desktop app must be running on this machine. It hosts the
-              bot service on localhost so messages keep flowing even after you close
-              this browser tab.
+              The Pengine desktop app must be running on this machine. It hosts the bot service on
+              localhost so messages keep flowing even after you close this browser tab.
             </p>
             <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4 font-mono text-xs text-(--mid)">
               <p>
                 Checking <code className="text-slate-300">{PENGINE.health}</code>…
               </p>
             </div>
-            {pengineChecking && (
-              <p className="mt-3 font-mono text-xs text-yellow-300">Checking…</p>
-            )}
+            {pengineChecking && <p className="mt-3 font-mono text-xs text-yellow-300">Checking…</p>}
             {pengineReachable === true && (
               <p className="mt-3 font-mono text-xs text-emerald-300">
                 Pengine is running on localhost.
@@ -353,8 +361,8 @@ ollama pull llama3.2`}</code>
               What happens next
             </p>
             <p className="mt-3 text-sm text-slate-100">
-              The next step hands off your bot token to the local Pengine process.
-              The bot will start polling Telegram automatically.
+              The next step hands off your bot token to the local Pengine process. The bot will
+              start polling Telegram automatically.
             </p>
           </div>
         </div>
@@ -365,12 +373,10 @@ ollama pull llama3.2`}</code>
         <div className="grid gap-8 lg:grid-cols-[1fr_1fr]">
           <div>
             <p className="mono-label">Step 4</p>
-            <h2 className="mt-2 text-3xl font-extrabold text-white">
-              Connect bot to Pengine
-            </h2>
+            <h2 className="mt-2 text-3xl font-extrabold text-white">Connect bot to Pengine</h2>
             <p className="mt-3 subtle-copy">
-              Send your bot token to the local Pengine service. It will verify the
-              token with Telegram and start listening for messages.
+              Send your bot token to the local Pengine service. It will verify the token with
+              Telegram and start listening for messages.
             </p>
             <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/60 p-4 font-mono text-sm text-slate-100">
               <p>

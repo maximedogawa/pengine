@@ -116,28 +116,19 @@ export function LandingPage() {
             </div>
             <h1 className="mt-4 max-w-4xl text-4xl font-extrabold leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-6xl">
               Your AI that lives on{" "}
-              <span className="font-serif text-(--yellow) italic">
-                your machine,
-              </span>{" "}
-              not someone else&apos;s server bill.
+              <span className="font-serif text-(--yellow) italic">your machine,</span> not someone
+              else&apos;s server bill.
             </h1>
             <p className="mt-4 max-w-2xl subtle-copy">
-              Pengine is a local-first AI agent runtime built around an agentic
-              loop and a messaging interface. Telegram becomes the frontend,
-              Ollama becomes the default brain, and Docker tools become new
-              abilities on demand.
+              Pengine is a local-first AI agent runtime built around an agentic loop and a messaging
+              interface. Telegram becomes the frontend, Ollama becomes the default brain, and Docker
+              tools become new abilities on demand.
             </p>
             <div className="mt-5 flex flex-wrap gap-3">
-              <Link
-                to="/setup"
-                className="primary-button px-6"
-              >
+              <Link to="/setup" className="primary-button px-6">
                 Scan and connect
               </Link>
-              <a
-                href="#spec"
-                className="secondary-button px-6"
-              >
+              <a href="#spec" className="secondary-button px-6">
                 Read the spec
               </a>
             </div>
@@ -164,13 +155,11 @@ export function LandingPage() {
           <p className="mono-label">How it works</p>
           <div className="mt-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <h2 className="max-w-3xl text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
-              Setup in under a minute, then let the penguin do the weirdly
-              powerful part.
+              Setup in under a minute, then let the penguin do the weirdly powerful part.
             </h2>
             <p className="max-w-xl subtle-copy">
-              The core user experience is simple even if the internals get
-              ambitious: create bot, scan QR, talk to your runtime, and install
-              more abilities over time.
+              The core user experience is simple even if the internals get ambitious: create bot,
+              scan QR, talk to your runtime, and install more abilities over time.
             </p>
           </div>
           <div className="mt-10 grid gap-8 lg:grid-cols-[1.05fr_0.95fr]">
@@ -207,16 +196,12 @@ export function LandingPage() {
                 A runtime, not just a chatbot wrapper.
               </h2>
               <p className="mt-4 subtle-copy">
-                Pengine flips the standard AI app model. It runs local-first,
-                keeps cost under user control, and treats tools as composable
-                containerized capabilities.
+                Pengine flips the standard AI app model. It runs local-first, keeps cost under user
+                control, and treats tools as composable containerized capabilities.
               </p>
               <div className="mt-6 grid gap-3">
                 {specCards.map((card) => (
-                  <div
-                    key={card.title}
-                    className="feature-chip p-5"
-                  >
+                  <div key={card.title} className="feature-chip p-5">
                     <h3 className="text-lg font-bold text-white">{card.title}</h3>
                     <p className="mt-2 subtle-copy">{card.body}</p>
                   </div>
@@ -234,8 +219,8 @@ export function LandingPage() {
               Ship in phases, not in a 12-month fog.
             </h2>
             <p className="max-w-xl subtle-copy">
-              Each phase should be useful on its own. The goal is to build a real
-              local agent product, not a concept site that never reaches runtime.
+              Each phase should be useful on its own. The goal is to build a real local agent
+              product, not a concept site that never reaches runtime.
             </p>
           </div>
           <div className="mt-10 grid gap-5 lg:grid-cols-3">
@@ -254,18 +239,11 @@ export function LandingPage() {
                   <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-(--dim)">
                     {phase.eyebrow}
                   </p>
-                  <h3 className="mt-3 text-2xl font-extrabold text-white">
-                    {phase.title}
-                  </h3>
-                  <p className="mt-2 font-serif text-sm italic text-(--teal)">
-                    {phase.quip}
-                  </p>
+                  <h3 className="mt-3 text-2xl font-extrabold text-white">{phase.title}</h3>
+                  <p className="mt-2 font-serif text-sm italic text-(--teal)">{phase.quip}</p>
                   <div className="mt-5 space-y-3">
                     {phase.items.map((item) => (
-                      <div
-                        key={item}
-                        className="flex gap-3 font-mono text-sm text-(--mid)"
-                      >
+                      <div key={item} className="flex gap-3 font-mono text-sm text-(--mid)">
                         <span className="text-(--yellow)">→</span>
                         <span>{item}</span>
                       </div>
@@ -310,21 +288,14 @@ export function LandingPage() {
               Your AI. Your machine. Your rules.
             </h2>
             <p className="mx-auto mt-4 max-w-2xl subtle-copy">
-              Use the landing page as the spec and vision. Use the wizard page as
-              the actual onboarding flow. One explains the product, the other gets
-              it running.
+              Use the landing page as the spec and vision. Use the wizard page as the actual
+              onboarding flow. One explains the product, the other gets it running.
             </p>
             <div className="mt-8 flex flex-wrap justify-center gap-4">
-              <Link
-                to="/setup"
-                className="primary-button px-6"
-              >
+              <Link to="/setup" className="primary-button px-6">
                 Open setup wizard
               </Link>
-              <a
-                href="#spec"
-                className="secondary-button px-6"
-              >
+              <a href="#spec" className="secondary-button px-6">
                 Review project spec
               </a>
             </div>

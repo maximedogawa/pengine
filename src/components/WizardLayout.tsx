@@ -45,8 +45,8 @@ export function WizardLayout({
               Step {activeStep + 1} of {stepTitles.length}: {stepTitles[activeStep]}
             </h2>
             <p className="mt-2 subtle-copy">
-              Follow the flow from left to right, and jump back to any completed
-              step if you want to verify something.
+              Follow the flow from left to right, and jump back to any completed step if you want to
+              verify something.
             </p>
           </div>
           <div className="min-w-40 sm:text-right">
@@ -63,10 +63,7 @@ export function WizardLayout({
         </div>
       </div>
 
-      <ol
-        className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-        aria-label="Setup steps"
-      >
+      <ol className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Setup steps">
         {stepTitles.map((title, index) => (
           <li key={title}>
             <button
@@ -80,9 +77,7 @@ export function WizardLayout({
               >
                 {index < activeStep ? "✓" : index + 1}
               </span>
-              <span className="font-mono text-xs uppercase tracking-[0.14em]">
-                {title}
-              </span>
+              <span className="font-mono text-xs uppercase tracking-[0.14em]">{title}</span>
             </button>
           </li>
         ))}
