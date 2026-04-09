@@ -18,22 +18,16 @@ export function SpecMockup() {
       </div>
       <div className="grid gap-4 px-5 py-5 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <p className="font-mono text-xs uppercase tracking-[0.18em] text-(--dim)">
-            Flow
-          </p>
+          <p className="font-mono text-xs uppercase tracking-[0.18em] text-(--dim)">Flow</p>
           <div className="mt-4 flex flex-col gap-3 text-sm text-slate-100">
             <div className="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3">
               📱 Telegram
             </div>
-            <div className="pl-3 font-mono text-xs text-(--teal)">
-              HTTPS / Bot API
-            </div>
+            <div className="pl-3 font-mono text-xs text-(--teal)">HTTPS / Bot API</div>
             <div className="rounded-xl border border-yellow-300/20 bg-yellow-300/5 px-4 py-3">
               🐧 Pengine runtime
             </div>
-            <div className="pl-3 font-mono text-xs text-(--blue)">
-              localhost / events / sockets
-            </div>
+            <div className="pl-3 font-mono text-xs text-(--blue)">localhost / events / sockets</div>
             <div className="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3">
               🦙 Ollama + 🐳 Tools
             </div>

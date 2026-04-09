@@ -27,8 +27,8 @@ export function PhoneMockup() {
             [searxng] searching "rust news 2026"...
           </div>
           <div className="max-w-[88%] rounded-2xl rounded-bl-md bg-[#1e2e44] px-3 py-2 text-slate-100">
-            Found 6 results. Top story: Rust tooling keeps getting weirder and
-            better. Want a summary?
+            Found 6 results. Top story: Rust tooling keeps getting weirder and better. Want a
+            summary?
           </div>
           <div className="ml-auto max-w-[80%] rounded-2xl rounded-br-md bg-cyan-400/10 px-3 py-2 text-slate-100">
             /install code-sandbox

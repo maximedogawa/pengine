@@ -42,9 +42,7 @@ export function SetupPage() {
           <div className="grid gap-6">
             <div className="panel rounded-4xl p-6">
               <p className="mono-label">Current focus</p>
-              <p className="mt-3 text-2xl font-extrabold text-white">
-                {currentStep.title}
-              </p>
+              <p className="mt-3 text-2xl font-extrabold text-white">{currentStep.title}</p>
               <p className="mt-3 subtle-copy">{currentStep.summary}</p>
               <div className="mt-5 flex items-center gap-3">
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
@@ -100,8 +98,8 @@ export function SetupPage() {
               <div className="panel p-5">
                 <p className="mono-label">Runtime note</p>
                 <p className="mt-3 subtle-copy">
-                  The Pengine desktop app must be running for the bot to receive
-                  messages. You can close this browser tab after setup.
+                  The Pengine desktop app must be running for the bot to receive messages. You can
+                  close this browser tab after setup.
                 </p>
               </div>
               <TerminalPreview />
