@@ -40,7 +40,9 @@ export async function fetchOllamaModels(timeoutMs = 3000): Promise<OllamaModelsR
   }
 }
 
-export async function setPreferredOllamaModel(model: string | null): Promise<boolean> {
+export async function setPreferredOllamaModel(
+  model: string | null,
+): Promise<{ ok: boolean; error?: string }> {
   try {
     const resp = await fetch(`${PENGINE_API_BASE}/v1/ollama/model`, {
       method: "PUT",
@@ -48,8 +50,17 @@ export async function setPreferredOllamaModel(model: string | null): Promise<boo
       body: JSON.stringify({ model }),
       signal: AbortSignal.timeout(5000),
     });
-    return resp.ok;
-  } catch {
-    return false;
+    if (resp.ok) return { ok: true };
+
+    try {
+      const body = (await resp.json()) as { error?: string; message?: string };
+      const message = body.error || body.message || `Request failed (HTTP ${resp.status})`;
+      return { ok: false, error: message };
+    } catch {
+      const text = await resp.text().catch(() => "");
+      return { ok: false, error: text || `Request failed (HTTP ${resp.status})` };
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Request failed" };
   }
 }

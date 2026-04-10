@@ -28,7 +28,7 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 let state = shared_state.clone();
-                tauri::async_runtime::spawn(async move {
+                tauri::async_runtime::block_on(async move {
                     *state.app_handle.lock().await = Some(handle);
                 });
             }

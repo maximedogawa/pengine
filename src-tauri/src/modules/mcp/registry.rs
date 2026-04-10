@@ -2,10 +2,12 @@ use super::client::McpClient;
 use super::native::NativeProvider;
 use super::types::ToolDef;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
+#[derive(Clone)]
 pub enum Provider {
-    Native(NativeProvider),
-    Mcp(Box<McpClient>),
+    Native(Arc<NativeProvider>),
+    Mcp(Arc<McpClient>),
 }
 
 impl Provider {
@@ -66,7 +68,9 @@ impl ToolRegistry {
     pub fn all_tools(&self) -> Vec<ToolDef> {
         self.providers
             .iter()
-            .flat_map(|p| p.tools().iter().cloned())
+            .flat_map(|p| p.tools().iter())
+            .filter(|t| should_expose_to_model(t))
+            .cloned()
             .collect()
     }
 
@@ -83,6 +87,12 @@ impl ToolRegistry {
     }
 
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<(String, bool), String> {
+        let (provider, tool, direct) = self.resolve_tool(name)?;
+        let text = provider.call_tool(&tool, args).await?;
+        Ok((text, direct))
+    }
+
+    pub fn resolve_tool(&self, name: &str) -> Result<(Provider, String, bool), String> {
         let (server, tool) = match name.split_once('.') {
             Some((s, t)) => (Some(s), t),
             None => (None, name),
@@ -95,9 +105,7 @@ impl ToolRegistry {
                 }
             }
             if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
-                let direct = def.direct_return;
-                let text = provider.call_tool(tool, args).await?;
-                return Ok((text, direct));
+                return Ok((provider.clone(), tool.to_string(), def.direct_return));
             }
         }
         Err(format!("tool not found: {name}"))

@@ -22,6 +22,7 @@ export function DashboardPage() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [savingModel, setSavingModel] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [services, setServices] = useState<ServiceInfo[]>([
     { name: "Pengine", status: "checking", detail: "Checking…" },
     { name: "Telegram", status: "checking", detail: "Checking…" },
@@ -80,14 +81,18 @@ export function DashboardPage() {
 
   const handleModelChange = async (value: string) => {
     const next = value === "__active__" ? null : value;
+    setModelError(null);
     setSavingModel(true);
-    const ok = await setPreferredOllamaModel(next);
+    const result = await setPreferredOllamaModel(next);
     setSavingModel(false);
-    if (ok) {
+    if (result.ok) {
       await refreshStatus();
+      return;
     }
+    setModelError(result.error ?? "Could not update model");
   };
 
+  const anyChecking = services.some((s) => s.status === "checking");
   const allRunning = services.every((s) => s.status === "running");
 
   return (
@@ -102,13 +107,19 @@ export function DashboardPage() {
             <div className="flex items-center gap-2">
               <span
                 className={`h-2 w-2 shrink-0 rounded-full sm:h-2.5 sm:w-2.5 ${
-                  allRunning
-                    ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
-                    : "bg-rose-400"
+                  anyChecking
+                    ? "bg-yellow-300"
+                    : allRunning
+                      ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
+                      : "bg-rose-400"
                 }`}
               />
               <p className="font-mono text-xs font-semibold text-white sm:text-sm">
-                {allRunning ? "All systems running" : "Some services offline"}
+                {anyChecking
+                  ? "Checking services..."
+                  : allRunning
+                    ? "All systems running"
+                    : "Some services offline"}
               </p>
             </div>
 
@@ -189,6 +200,7 @@ export function DashboardPage() {
         {disconnectError && (
           <p className="mt-2 font-mono text-xs text-rose-300">{disconnectError}</p>
         )}
+        {modelError && <p className="mt-2 font-mono text-xs text-rose-300">{modelError}</p>}
 
         {/* ── Terminal (full width) ────────────────────────────── */}
         <section className="mt-4 sm:mt-6">

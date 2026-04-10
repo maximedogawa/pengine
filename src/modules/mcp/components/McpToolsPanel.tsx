@@ -41,7 +41,7 @@ export function McpToolsPanel() {
       const data = await fetchMcpTools();
       if (cancelled) return;
       setTools(data);
-      const next = data.length > 0 ? 10_000 : 1_000;
+      const next = data.length > 0 ? 10_000 : 30_000;
       timer = setTimeout(() => pollTools(), next);
     };
 
@@ -54,19 +54,27 @@ export function McpToolsPanel() {
 
   // ── Server CRUD handlers ───────────────────────────────────────────
 
-  const handleSaveServer = async (name: string, entry: ServerEntry) => {
+  const handleSaveServer = async (name: string, entry: ServerEntry): Promise<boolean> => {
     setBusy(true);
     setNotice(null);
     const ok = await upsertMcpServer(name, entry);
     if (!ok) {
       setNotice(`Could not save "${name}"`);
       setBusy(false);
-      return;
+      return false;
     }
     setEditingName(null);
     await reload();
     setBusy(false);
     setNotice(`Server "${name}" saved — tools reloaded`);
+    return true;
+  };
+
+  const handleAddServer = async (name: string, entry: ServerEntry) => {
+    const ok = await handleSaveServer(name, entry);
+    if (!ok) {
+      throw new Error(`Could not save "${name}"`);
+    }
   };
 
   const handleDeleteServer = async (name: string) => {
@@ -128,7 +136,9 @@ export function McpToolsPanel() {
                   tools={tools ?? []}
                   busy={busy}
                   editingName={editingName}
-                  onSave={handleSaveServer}
+                  onSave={async (serverName, serverEntry) => {
+                    await handleSaveServer(serverName, serverEntry);
+                  }}
                   onDelete={handleDeleteServer}
                   onEditStart={setEditingName}
                 />
@@ -136,7 +146,7 @@ export function McpToolsPanel() {
             </div>
           )}
 
-          <AddServerForm busy={busy} onAdd={handleSaveServer} />
+          <AddServerForm busy={busy} onAdd={handleAddServer} />
         </div>
 
         {/* ── Available tools ─────────────────────────────────────── */}

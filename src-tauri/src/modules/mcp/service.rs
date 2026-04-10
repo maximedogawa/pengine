@@ -6,6 +6,7 @@ use super::native;
 use super::registry::{Provider, ToolRegistry};
 use super::types::{McpConfig, ServerEntry};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const FILESYSTEM_SERVER_KEY: &str = "filesystem";
 const FILESYSTEM_PKG: &str = "@modelcontextprotocol/server-filesystem";
@@ -49,25 +50,23 @@ pub fn save_config(path: &Path, cfg: &McpConfig) -> Result<(), String> {
     std::fs::write(path, pretty).map_err(|e| format!("write mcp.json: {e}"))
 }
 
-/// Allowed folder for the official MCP filesystem stdio server (last path segment in `args`).
-pub fn filesystem_allowed_path(cfg: &McpConfig) -> Option<String> {
-    let ServerEntry::Stdio { args, .. } = cfg.servers.get(FILESYSTEM_SERVER_KEY)? else {
-        return None;
+/// All allowed folders for the official MCP filesystem stdio server (paths after the package arg).
+pub fn filesystem_allowed_paths(cfg: &McpConfig) -> Vec<String> {
+    let Some(ServerEntry::Stdio { args, .. }) = cfg.servers.get(FILESYSTEM_SERVER_KEY) else {
+        return Vec::new();
     };
-    if !args.iter().any(|a| a.contains("server-filesystem")) {
-        return None;
-    }
-    args.last().cloned()
+    let Some(pkg_idx) = args.iter().position(|a| a.contains("server-filesystem")) else {
+        return Vec::new();
+    };
+    args[pkg_idx + 1..].to_vec()
 }
 
-pub fn set_filesystem_allowed_path(cfg: &mut McpConfig, abs_path: &str) {
+pub fn set_filesystem_allowed_paths(cfg: &mut McpConfig, paths: &[String]) {
+    let mut args = vec!["-y".into(), FILESYSTEM_PKG.into()];
+    args.extend(paths.iter().map(|p| p.trim().to_string()));
     let entry = ServerEntry::Stdio {
         command: "npx".into(),
-        args: vec![
-            "-y".into(),
-            FILESYSTEM_PKG.into(),
-            abs_path.trim().to_string(),
-        ],
+        args,
         env: Default::default(),
         direct_return: true,
     };
@@ -110,7 +109,7 @@ pub async fn build_registry(cfg: &McpConfig) -> (ToolRegistry, Vec<String>) {
             ServerEntry::Native { id } => match native::native_for(server_key, id) {
                 Ok(p) => {
                     let n = p.tools.len();
-                    providers.push(Provider::Native(p));
+                    providers.push(Provider::Native(Arc::new(p)));
                     status.push(format!(
                         "{server_key} native ({n} tool{})",
                         if n == 1 { "" } else { "s" }
@@ -135,7 +134,7 @@ pub async fn build_registry(cfg: &McpConfig) -> (ToolRegistry, Vec<String>) {
                 Ok(client) => {
                     let n = client.tools.len();
                     let dr = if *direct_return { " direct_return" } else { "" };
-                    providers.push(Provider::Mcp(Box::new(client)));
+                    providers.push(Provider::Mcp(Arc::new(client)));
                     status.push(format!(
                         "{server_key} stdio ({n} tool{}{dr})",
                         if n == 1 { "" } else { "s" }

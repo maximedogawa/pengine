@@ -29,30 +29,30 @@ pub async fn model_catalog(timeout_ms: u64) -> Result<ModelCatalog, String> {
         }
     }
 
-    let resp = client
-        .get(OLLAMA_TAGS_URL)
-        .timeout(timeout)
-        .send()
-        .await
-        .map_err(|e| format!("ollama unreachable: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("ollama tags HTTP {}", resp.status()));
+    let mut models: Vec<String> = Vec::new();
+    if let Ok(resp) = client.get(OLLAMA_TAGS_URL).timeout(timeout).send().await {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                models = body["models"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+        }
     }
-
-    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let mut models: Vec<String> = body["models"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
 
     if let Some(ref a) = active {
         if !models.iter().any(|m| m == a) {
             models.insert(0, a.clone());
         }
+    }
+
+    if active.is_none() && models.is_empty() {
+        return Err("ollama unreachable: no active model and no pulled models".to_string());
     }
 
     Ok(ModelCatalog { active, models })
@@ -118,7 +118,7 @@ pub async fn chat_with_tools(
                 return Err(format!("ollama chat HTTP {st}: {b}"));
             }
             return Ok(ChatResult {
-                message: extract_message(&b),
+                message: extract_message(&b)?,
                 tools_supported: false,
             });
         }
@@ -126,7 +126,7 @@ pub async fn chat_with_tools(
     }
 
     Ok(ChatResult {
-        message: extract_message(&body),
+        message: extract_message(&body)?,
         tools_supported: has_tools,
     })
 }
@@ -146,8 +146,8 @@ async fn post_chat(
     Ok((status, body))
 }
 
-fn extract_message(body: &serde_json::Value) -> serde_json::Value {
+fn extract_message(body: &serde_json::Value) -> Result<serde_json::Value, String> {
     body.get("message")
         .cloned()
-        .unwrap_or(serde_json::Value::Null)
+        .ok_or_else(|| format!("ollama protocol error: missing `message` in response: {body}"))
 }

@@ -243,8 +243,12 @@ export function SetupWizard({ onStepChange, onCompleteSetup }: SetupWizardProps)
             </p>
             <pre className="mt-5 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/70 p-4 font-mono text-sm text-emerald-200">
               <code>{`curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.2`}</code>
+ollama pull qwen3:8b`}</code>
             </pre>
+            <p className="mt-2 text-xs text-white/40">
+              Recommended: <span className="text-white/60">qwen3:8b</span> — good balance of speed
+              and tool-calling support.
+            </p>
 
             {ollamaChecking && (
               <p className="mt-4 font-mono text-xs text-yellow-300">Detecting Ollama…</p>
@@ -262,7 +266,7 @@ ollama pull llama3.2`}</code>
             {ollamaReachable === true && !ollamaModel && (
               <p className="mt-4 font-mono text-xs text-yellow-300">
                 Ollama is running but no model is pulled yet. Run{" "}
-                <code className="text-slate-200">ollama pull llama3.2</code> first.
+                <code className="text-slate-200">ollama pull qwen3:8b</code> first.
               </p>
             )}
 

@@ -34,6 +34,7 @@ pub struct AppState {
     pub mcp_config_source: String,
     pub app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
     pub mcp: Arc<RwLock<ToolRegistry>>,
+    pub mcp_config_mutex: Arc<Mutex<()>>,
     pub preferred_ollama_model: Arc<RwLock<Option<String>>>,
 }
 
@@ -50,6 +51,7 @@ impl AppState {
             mcp_config_source,
             app_handle: Arc::new(Mutex::new(None)),
             mcp: Arc::new(RwLock::new(ToolRegistry::default())),
+            mcp_config_mutex: Arc::new(Mutex::new(())),
             preferred_ollama_model: Arc::new(RwLock::new(None)),
         }
     }

@@ -14,7 +14,7 @@
 | **Client** | `src-tauri/src/modules/mcp/` | One `McpClient` per connected server. Speaks JSON-RPC over stdio. |
 | **Server** | External child process | Anything that speaks MCP — `npx @modelcontextprotocol/server-filesystem`, a Docker container, a custom binary. |
 
-```
+```text
 Telegram message
       │
       ▼
@@ -30,7 +30,7 @@ bot::agent::run_turn ────► ollama::chat_with_tools (Ollama /api/chat)
 
 ## Module Layout
 
-```
+```text
 src-tauri/src/modules/mcp/
 ├── mod.rs
 ├── protocol.rs   JSON-RPC 2.0 request/response types
@@ -63,7 +63,7 @@ To add a server: add another entry under `servers`. Restart Pengine.
 
 ## Protocol Subset Implemented
 
-Three messages, that's it:
+Four messages, that's it:
 
 1. `initialize` — handshake. We send `{protocolVersion, capabilities, clientInfo}` and ignore most of the response.
 2. `notifications/initialized` — required notification after init.

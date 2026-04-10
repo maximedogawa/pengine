@@ -55,12 +55,12 @@ pub struct McpConfigInfoResponse {
     pub config_path: String,
     /// `"project"` or `"app_data"`
     pub source: String,
-    pub filesystem_allowed_path: Option<String>,
+    pub filesystem_allowed_paths: Vec<String>,
 }
 
 #[derive(Deserialize)]
 pub struct PutMcpFilesystemBody {
-    pub path: String,
+    pub paths: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -318,17 +318,18 @@ async fn handle_ollama_model_put(
 }
 
 async fn handle_mcp_config_get(State(state): State<AppState>) -> Json<McpConfigInfoResponse> {
-    let filesystem_allowed_path = state
+    let filesystem_allowed_paths = state
         .mcp_config_path
         .exists()
         .then(|| mcp_service::read_config(&state.mcp_config_path).ok())
         .flatten()
-        .and_then(|c| mcp_service::filesystem_allowed_path(&c));
+        .map(|c| mcp_service::filesystem_allowed_paths(&c))
+        .unwrap_or_default();
 
     Json(McpConfigInfoResponse {
         config_path: state.mcp_config_path.to_string_lossy().into_owned(),
         source: state.mcp_config_source.clone(),
-        filesystem_allowed_path,
+        filesystem_allowed_paths,
     })
 }
 
@@ -336,12 +337,17 @@ async fn handle_mcp_filesystem_put(
     State(state): State<AppState>,
     Json(body): Json<PutMcpFilesystemBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
-    let path = body.path.trim();
-    if path.is_empty() {
+    let paths: Vec<String> = body
+        .paths
+        .iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if paths.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "path is required".into(),
+                error: "at least one path is required".into(),
             }),
         ));
     }
@@ -358,7 +364,7 @@ async fn handle_mcp_filesystem_put(
         })?
     };
 
-    mcp_service::set_filesystem_allowed_path(&mut cfg, path);
+    mcp_service::set_filesystem_allowed_paths(&mut cfg, &paths);
     mcp_service::save_config(&state.mcp_config_path, &cfg).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -370,7 +376,8 @@ async fn handle_mcp_filesystem_put(
         .emit_log(
             "mcp",
             &format!(
-                "filesystem allow path updated → {}",
+                "filesystem allowed paths ({}) updated → {}",
+                paths.len(),
                 state.mcp_config_path.display()
             ),
         )
@@ -453,6 +460,7 @@ async fn handle_mcp_server_upsert(
         }
     }
 
+    let _guard = state.mcp_config_mutex.lock().await;
     let mut cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

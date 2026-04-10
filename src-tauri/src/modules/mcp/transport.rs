@@ -67,7 +67,22 @@ impl StdioTransport {
 
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(_)) = lines.next_line().await {}
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        log::debug!("mcp stderr: {line}");
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        log::debug!("mcp stderr read error: {e}");
+                        break;
+                    }
+                }
+            }
         });
 
         Ok(Self {
@@ -96,10 +111,20 @@ impl StdioTransport {
             stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
         }
 
-        let resp = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| "mcp call timed out".to_string())?
-            .map_err(|_| "mcp response channel dropped".to_string())?;
+        let resp = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                return Err("mcp call timed out".to_string());
+            }
+            Ok(rx_result) => match rx_result {
+                Err(_) => {
+                    self.pending.lock().await.remove(&id);
+                    return Err("mcp response channel dropped".to_string());
+                }
+                Ok(resp) => resp,
+            },
+        };
+        self.pending.lock().await.remove(&id);
 
         if let Some(err) = resp.error {
             return Err(format!("mcp error: {}", err.message));

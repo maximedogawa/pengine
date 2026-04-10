@@ -2959,6 +2959,7 @@ dependencies = [
  "chrono",
  "env_logger",
  "fastrand",
+ "log",
  "reqwest 0.13.2",
  "serde",
  "serde_json",

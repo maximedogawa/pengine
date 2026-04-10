@@ -52,11 +52,19 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
     let fs_context = {
         use crate::modules::mcp::service as mcp_service;
         if state.mcp_config_path.exists() {
-            mcp_service::read_config(&state.mcp_config_path)
+            let paths = mcp_service::read_config(&state.mcp_config_path)
                 .ok()
-                .and_then(|cfg| mcp_service::filesystem_allowed_path(&cfg))
-                .map(|p| format!("\nFile tools operate on: {p}\nAlways use absolute paths starting with {p}/.", p = p))
-                .unwrap_or_default()
+                .map(|cfg| mcp_service::filesystem_allowed_paths(&cfg))
+                .unwrap_or_default();
+            if paths.is_empty() {
+                String::new()
+            } else {
+                let listing = paths.join(", ");
+                format!(
+                    "\nFile tools operate on these directories: {listing}\n\
+                     Always use absolute paths rooted in one of those directories."
+                )
+            }
         } else {
             String::new()
         }
@@ -176,13 +184,24 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
             state.emit_log("tool", &format!("[{step}] {name}")).await;
 
             let t_tool = Instant::now();
-            let (result_text, is_direct) = match state.mcp.read().await.call_tool(&name, args).await
-            {
-                Ok((text, direct)) => {
-                    state
-                        .emit_log("tool", &format!("result ({} bytes)", text.len()))
-                        .await;
-                    (text, direct)
+            let resolved = {
+                let reg = state.mcp.read().await;
+                reg.resolve_tool(&name)
+            };
+            let (result_text, is_direct) = match resolved {
+                Ok((provider, tool_name, direct)) => {
+                    match provider.call_tool(&tool_name, args).await {
+                        Ok(text) => {
+                            state
+                                .emit_log("tool", &format!("result ({} bytes)", text.len()))
+                                .await;
+                            (text, direct)
+                        }
+                        Err(e) => {
+                            state.emit_log("tool", &format!("error: {e}")).await;
+                            (format!("ERROR: {e}"), false)
+                        }
+                    }
                 }
                 Err(e) => {
                     state.emit_log("tool", &format!("error: {e}")).await;
@@ -263,7 +282,10 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
             });
         }
 
-        let fallback = tool_results.last().map(|(_, c)| c.clone()).unwrap();
+        let fallback = tool_results
+            .last()
+            .map(|(_, c)| c.clone())
+            .expect("tool_results must be non-empty here after guard");
         state
             .emit_log("tool", "empty summary, returning raw tool output")
             .await;

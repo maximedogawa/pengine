@@ -213,8 +213,8 @@ function InlineEditForm({
     }
   };
 
-  const removePath = (index: number) => {
-    updatePaths(parsePaths().filter((_, i) => i !== index));
+  const removePath = (path: string) => {
+    updatePaths(parsePaths().filter((p) => p !== path));
   };
 
   const pickFolder = async () => {
@@ -352,7 +352,7 @@ function FolderHelper({
 }: {
   paths: string[];
   onAdd: (p: string) => void;
-  onRemove: (index: number) => void;
+  onRemove: (path: string) => void;
   onPickFolder: () => void;
 }) {
   const [newPath, setNewPath] = useState("");
@@ -374,9 +374,9 @@ function FolderHelper({
 
       {paths.length > 0 && (
         <div className="mb-2 grid gap-1">
-          {paths.map((p, i) => (
+          {paths.map((p) => (
             <div
-              key={i}
+              key={p}
               className="flex items-center gap-2 rounded-md border border-white/8 bg-white/5 px-2 py-1"
             >
               <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-white/80" title={p}>
@@ -384,7 +384,7 @@ function FolderHelper({
               </p>
               <button
                 type="button"
-                onClick={() => onRemove(i)}
+                onClick={() => onRemove(p)}
                 className="shrink-0 font-mono text-[10px] text-rose-300/50 hover:text-rose-200"
               >
                 x

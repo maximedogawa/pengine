@@ -80,9 +80,13 @@ export function AddServerForm({ busy, onAdd }: Props) {
       entry = normalizeEntry(inner as Record<string, unknown>);
     }
 
-    await onAdd(name, entry);
-    reset();
-    setOpen(false);
+    try {
+      await onAdd(name, entry);
+      reset();
+      setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add server");
+    }
   };
 
   const handleFormSubmit = async () => {
@@ -107,15 +111,19 @@ export function AddServerForm({ busy, onAdd }: Props) {
       if (eq > 0) env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
     }
 
-    await onAdd(name, {
-      type: "stdio",
-      command: command.trim(),
-      args,
-      env,
-      direct_return: directReturn,
-    });
-    reset();
-    setOpen(false);
+    try {
+      await onAdd(name, {
+        type: "stdio",
+        command: command.trim(),
+        args,
+        env,
+        direct_return: directReturn,
+      });
+      reset();
+      setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add server");
+    }
   };
 
   const inputClass =
