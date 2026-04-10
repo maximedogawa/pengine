@@ -50,23 +50,15 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
     };
 
     let fs_context = {
-        use crate::modules::mcp::service as mcp_service;
-        if state.mcp_config_path.exists() {
-            let paths = mcp_service::read_config(&state.mcp_config_path)
-                .ok()
-                .map(|cfg| mcp_service::filesystem_allowed_paths(&cfg))
-                .unwrap_or_default();
-            if paths.is_empty() {
-                String::new()
-            } else {
-                let listing = paths.join(", ");
-                format!(
-                    "\nFile tools operate on these directories: {listing}\n\
-                     Always use absolute paths rooted in one of those directories."
-                )
-            }
-        } else {
+        let paths = state.cached_filesystem_paths.read().await.clone();
+        if paths.is_empty() {
             String::new()
+        } else {
+            let listing = paths.join(", ");
+            format!(
+                "\nFile tools operate on these directories: {listing}\n\
+                 Always use absolute paths rooted in one of those directories."
+            )
         }
     };
 
@@ -101,7 +93,7 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
         };
         let result = ollama::chat_with_tools(&model, &messages, effective_tools).await?;
         let msg = result.message;
-        if !result.tools_supported && tools_supported {
+        if !result.tools_sent && tools_supported {
             tools_supported = false;
             state
                 .emit_log(
@@ -170,7 +162,7 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
             )
             .await;
 
-        let mut direct_reply: Option<String> = None;
+        let mut direct_replies: Vec<String> = Vec::new();
 
         for call in &tool_calls {
             let name = call
@@ -218,7 +210,7 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
             tool_results.push((name.clone(), result_text.clone()));
 
             if is_direct {
-                direct_reply = Some(result_text.clone());
+                direct_replies.push(result_text.clone());
             }
 
             if let Some(arr) = messages.as_array_mut() {
@@ -230,9 +222,9 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
             }
         }
 
-        if let Some(text) = direct_reply {
+        if !direct_replies.is_empty() {
             return Ok(TurnResult {
-                text,
+                text: direct_replies.join("\n\n"),
                 source: ReplySource::Tool,
             });
         }

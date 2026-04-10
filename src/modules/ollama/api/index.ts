@@ -52,14 +52,16 @@ export async function setPreferredOllamaModel(
     });
     if (resp.ok) return { ok: true };
 
+    const raw = await resp.text();
+    const fallback = `Request failed (HTTP ${resp.status})`;
+    let message = fallback;
     try {
-      const body = (await resp.json()) as { error?: string; message?: string };
-      const message = body.error || body.message || `Request failed (HTTP ${resp.status})`;
-      return { ok: false, error: message };
+      const body = JSON.parse(raw) as { error?: string; message?: string };
+      message = body.error || body.message || raw.trim() || fallback;
     } catch {
-      const text = await resp.text().catch(() => "");
-      return { ok: false, error: text || `Request failed (HTTP ${resp.status})` };
+      message = raw.trim() || fallback;
     }
+    return { ok: false, error: message };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Request failed" };
   }

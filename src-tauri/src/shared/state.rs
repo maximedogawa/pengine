@@ -36,6 +36,8 @@ pub struct AppState {
     pub mcp: Arc<RwLock<ToolRegistry>>,
     pub mcp_config_mutex: Arc<Mutex<()>>,
     pub preferred_ollama_model: Arc<RwLock<Option<String>>>,
+    /// Allowed filesystem paths from `mcp.json` (updated with MCP rebuild); avoids disk read per agent turn.
+    pub cached_filesystem_paths: Arc<RwLock<Vec<String>>>,
 }
 
 impl AppState {
@@ -53,6 +55,7 @@ impl AppState {
             mcp: Arc::new(RwLock::new(ToolRegistry::default())),
             mcp_config_mutex: Arc::new(Mutex::new(())),
             preferred_ollama_model: Arc::new(RwLock::new(None)),
+            cached_filesystem_paths: Arc::new(RwLock::new(Vec::new())),
         }
     }
 

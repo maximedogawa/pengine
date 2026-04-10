@@ -12,8 +12,13 @@ type Props = {
   onEditStart: (name: string | null) => void;
 };
 
-function isFilesystemServer(entry: ServerEntryStdio): boolean {
-  return entry.args.some((a) => a.includes("server-filesystem"));
+/** Detect filesystem MCP package in live args textarea (one token per line). */
+function argsTextLooksLikeFilesystem(argsText: string): boolean {
+  return argsText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .some((a) => a.includes("server-filesystem"));
 }
 
 export function McpServerCard({
@@ -116,6 +121,8 @@ export function McpServerCard({
               type="button"
               disabled={busy}
               onClick={() => setConfirmDelete(true)}
+              aria-label={`Delete server ${name}`}
+              title={`Delete server ${name}`}
               className="rounded-lg border border-rose-300/20 bg-transparent px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-rose-300/70 hover:bg-rose-300/10 hover:text-rose-200 disabled:opacity-40"
             >
               del
@@ -179,7 +186,7 @@ function InlineEditForm({
   );
   const [directReturn, setDirectReturn] = useState(entry.direct_return);
 
-  const isFs = isFilesystemServer(entry);
+  const isFs = argsTextLooksLikeFilesystem(argsText);
 
   // ── Filesystem folder helpers (read/write the args textarea) ──────
 
@@ -385,6 +392,8 @@ function FolderHelper({
               <button
                 type="button"
                 onClick={() => onRemove(p)}
+                aria-label={`Remove allowed folder ${p}`}
+                title="Remove folder"
                 className="shrink-0 font-mono text-[10px] text-rose-300/50 hover:text-rose-200"
               >
                 x

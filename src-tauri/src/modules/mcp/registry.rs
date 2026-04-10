@@ -98,14 +98,37 @@ impl ToolRegistry {
             None => (None, name),
         };
 
-        for provider in &self.providers {
-            if let Some(s) = server {
+        if server.is_none() {
+            let mut found: Vec<(&Provider, &ToolDef)> = Vec::new();
+            for provider in &self.providers {
+                if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
+                    found.push((provider, def));
+                }
+            }
+            return match found.len() {
+                0 => Err(format!("tool not found: {name}")),
+                1 => {
+                    let (p, d) = found[0];
+                    Ok((p.clone(), tool.to_string(), d.direct_return))
+                }
+                _ => {
+                    let servers: Vec<_> = found.iter().map(|(p, _)| p.server_name()).collect();
+                    Err(format!(
+                        "ambiguous tool `{tool}`: matches servers {}",
+                        servers.join(", ")
+                    ))
+                }
+            };
+        }
+
+        if let Some(s) = server {
+            for provider in &self.providers {
                 if provider.server_name() != s {
                     continue;
                 }
-            }
-            if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
-                return Ok((provider.clone(), tool.to_string(), def.direct_return));
+                if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
+                    return Ok((provider.clone(), tool.to_string(), def.direct_return));
+                }
             }
         }
         Err(format!("tool not found: {name}"))

@@ -352,6 +352,8 @@ async fn handle_mcp_filesystem_put(
         ));
     }
 
+    let _guard = state.mcp_config_mutex.lock().await;
+
     let mut cfg = if state.mcp_config_path.exists() {
         mcp_service::read_config(&state.mcp_config_path)
             .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?
@@ -489,6 +491,8 @@ async fn handle_mcp_server_delete(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    let _guard = state.mcp_config_mutex.lock().await;
+
     let mut cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

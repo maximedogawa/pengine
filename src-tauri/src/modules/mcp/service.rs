@@ -11,19 +11,26 @@ use std::sync::Arc;
 const FILESYSTEM_SERVER_KEY: &str = "filesystem";
 const FILESYSTEM_PKG: &str = "@modelcontextprotocol/server-filesystem";
 
-/// Prefer project `mcp.json` under `src-tauri/` (or `./mcp.json` when cwd is `src-tauri`),
-/// otherwise `mcp.json` next to `connection.json` in app data.
+/// Prefer project `mcp.json` under `src-tauri/` (or crate-root `mcp.json`) by walking up from
+/// [`std::env::current_exe`], so resolution does not depend on process CWD. Falls back to
+/// `mcp.json` next to `connection.json` in app data.
 pub fn resolve_mcp_config_path(store_path: &Path) -> (PathBuf, &'static str) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-    let from_repo_root = cwd.join("src-tauri").join("mcp.json");
-    if from_repo_root.exists() {
-        return (from_repo_root, "project");
-    }
-
-    let in_crate_root = cwd.join("mcp.json");
-    if cwd.join("Cargo.toml").exists() && in_crate_root.exists() {
-        return (in_crate_root, "project");
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(Path::to_path_buf);
+        for _ in 0..16 {
+            let Some(ref d) = dir else {
+                break;
+            };
+            let from_repo_root = d.join("src-tauri").join("mcp.json");
+            if from_repo_root.exists() {
+                return (from_repo_root, "project");
+            }
+            let in_crate_root = d.join("mcp.json");
+            if d.join("Cargo.toml").exists() && in_crate_root.exists() {
+                return (in_crate_root, "project");
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
     }
 
     let app_path = store_path
@@ -44,7 +51,8 @@ pub fn read_config(path: &Path) -> Result<McpConfig, String> {
 
 pub fn save_config(path: &Path, cfg: &McpConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create parent dirs for mcp.json: {e}"))?;
     }
     let pretty = serde_json::to_string_pretty(cfg).map_err(|e| format!("encode mcp.json: {e}"))?;
     std::fs::write(path, pretty).map_err(|e| format!("write mcp.json: {e}"))
@@ -90,7 +98,8 @@ pub fn load_or_init_config(path: &Path) -> Result<McpConfig, String> {
     }
 
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create parent dirs for mcp.json: {e}"))?;
     }
     let default = default_config_value();
     let pretty = serde_json::to_string_pretty(&default)
@@ -150,6 +159,7 @@ pub async fn build_registry(cfg: &McpConfig) -> (ToolRegistry, Vec<String>) {
 
 /// Replace in-memory tools after a config change (writes should use [`save_config`] first).
 pub async fn rebuild_registry_into_state(state: &crate::shared::state::AppState, cfg: &McpConfig) {
+    *state.cached_filesystem_paths.write().await = filesystem_allowed_paths(cfg);
     let (registry, status) = build_registry(cfg).await;
     for line in status {
         state.emit_log("mcp", &line).await;

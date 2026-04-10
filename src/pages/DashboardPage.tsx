@@ -157,7 +157,7 @@ export function DashboardPage() {
               <select
                 value={selectedModel ?? "__active__"}
                 onChange={(event) => void handleModelChange(event.target.value)}
-                disabled={savingModel || availableModels.length === 0}
+                disabled={savingModel}
                 className="max-w-28 bg-transparent font-mono text-[10px] text-cyan-100 outline-none sm:max-w-36"
                 title={
                   selectedModel

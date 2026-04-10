@@ -19,30 +19,60 @@ pub async fn model_catalog(timeout_ms: u64) -> Result<ModelCatalog, String> {
     let timeout = std::time::Duration::from_millis(timeout_ms);
 
     let mut active: Option<String> = None;
-    if let Ok(resp) = client.get(OLLAMA_PS_URL).timeout(timeout).send().await {
-        if let Ok(body) = resp.json::<serde_json::Value>().await {
-            active = body["models"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|m| m["name"].as_str())
-                .map(|s| s.to_string());
+    match client.get(OLLAMA_PS_URL).timeout(timeout).send().await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                log::warn!(
+                    "ollama {}: non-success HTTP {}",
+                    OLLAMA_PS_URL,
+                    resp.status()
+                );
+            } else {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(body) => {
+                        active = body["models"]
+                            .as_array()
+                            .and_then(|arr| arr.first())
+                            .and_then(|m| m["name"].as_str())
+                            .map(|s| s.to_string());
+                    }
+                    Err(e) => {
+                        log::warn!("ollama {}: JSON decode error: {e}", OLLAMA_PS_URL);
+                    }
+                }
+            }
         }
+        Err(e) => log::warn!("ollama {}: request error: {e}", OLLAMA_PS_URL),
     }
 
     let mut models: Vec<String> = Vec::new();
-    if let Ok(resp) = client.get(OLLAMA_TAGS_URL).timeout(timeout).send().await {
-        if resp.status().is_success() {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                models = body["models"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+    match client.get(OLLAMA_TAGS_URL).timeout(timeout).send().await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                log::warn!(
+                    "ollama {}: non-success HTTP {}",
+                    OLLAMA_TAGS_URL,
+                    resp.status()
+                );
+            } else {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(body) => {
+                        models = body["models"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                    }
+                    Err(e) => {
+                        log::warn!("ollama {}: JSON decode error: {e}", OLLAMA_TAGS_URL);
+                    }
+                }
             }
         }
+        Err(e) => log::warn!("ollama {}: request error: {e}", OLLAMA_TAGS_URL),
     }
 
     if let Some(ref a) = active {
@@ -72,12 +102,12 @@ pub async fn active_model() -> Result<String, String> {
         .ok_or_else(|| "no models pulled in ollama".to_string())
 }
 
-/// Outcome of a single chat call so the caller knows whether tools were used.
+/// Outcome of a single chat call so the caller knows whether tools were included in the request.
 pub struct ChatResult {
     pub message: serde_json::Value,
-    /// `true` when the model actually received tools; `false` when we had to
-    /// fall back to a plain chat because the model doesn't support them.
-    pub tools_supported: bool,
+    /// `true` when this request included a non-empty `tools` payload; `false` for plain chat
+    /// (including transparent fallback when the model rejects tools).
+    pub tools_sent: bool,
 }
 
 /// Tool-aware chat for the agent loop. Sends a full message history plus a
@@ -119,7 +149,7 @@ pub async fn chat_with_tools(
             }
             return Ok(ChatResult {
                 message: extract_message(&b)?,
-                tools_supported: false,
+                tools_sent: false,
             });
         }
         return Err(format!("ollama chat HTTP {status}: {body}"));
@@ -127,7 +157,7 @@ pub async fn chat_with_tools(
 
     Ok(ChatResult {
         message: extract_message(&body)?,
-        tools_supported: has_tools,
+        tools_sent: has_tools,
     })
 }
 
