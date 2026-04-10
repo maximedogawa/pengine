@@ -417,12 +417,15 @@ struct McpServersResponse {
 async fn handle_mcp_servers_list(
     State(state): State<AppState>,
 ) -> Result<Json<McpServersResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: e }),
-        )
-    })?;
+    let cfg = {
+        let _guard = state.mcp_config_mutex.lock().await;
+        mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e }),
+            )
+        })?
+    };
     Ok(Json(McpServersResponse {
         servers: cfg.servers,
     }))

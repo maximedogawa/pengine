@@ -122,8 +122,9 @@ impl ToolRegistry {
         }
 
         if let Some(s) = server {
+            let key = s.trim();
             for provider in &self.providers {
-                if provider.server_name() != s {
+                if !provider.server_name().eq_ignore_ascii_case(key) {
                     continue;
                 }
                 if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {

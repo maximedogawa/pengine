@@ -185,6 +185,7 @@ function InlineEditForm({
       .join("\n"),
   );
   const [directReturn, setDirectReturn] = useState(entry.direct_return);
+  const [pickFolderError, setPickFolderError] = useState<string | null>(null);
 
   const isFs = argsTextLooksLikeFilesystem(argsText);
 
@@ -225,12 +226,19 @@ function InlineEditForm({
   };
 
   const pickFolder = async () => {
+    setPickFolderError(null);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const picked = await invoke<string | null>("pick_mcp_filesystem_folder");
-      if (picked) addPath(picked);
+      try {
+        const picked = await invoke<string | null>("pick_mcp_filesystem_folder");
+        if (picked) addPath(picked);
+      } catch (invokeErr) {
+        setPickFolderError(
+          invokeErr instanceof Error ? invokeErr.message : "Could not open folder picker",
+        );
+      }
     } catch {
-      // Not running in desktop
+      // Web / non-Tauri: dynamic import of `@tauri-apps/api/core` fails — expected, stay silent
     }
   };
 
@@ -276,6 +284,7 @@ function InlineEditForm({
         {isFs && (
           <FolderHelper
             paths={fsPaths}
+            pickError={pickFolderError}
             onAdd={addPath}
             onRemove={removePath}
             onPickFolder={pickFolder}
@@ -353,11 +362,13 @@ function InlineEditForm({
 
 function FolderHelper({
   paths,
+  pickError,
   onAdd,
   onRemove,
   onPickFolder,
 }: {
   paths: string[];
+  pickError: string | null;
   onAdd: (p: string) => void;
   onRemove: (path: string) => void;
   onPickFolder: () => void;
@@ -379,11 +390,17 @@ function FolderHelper({
 
       {paths.length === 0 && <p className="mb-2 text-xs text-white/30 italic">No folders yet</p>}
 
+      {pickError && (
+        <p className="mb-2 font-mono text-[11px] text-rose-300/90" role="alert">
+          {pickError}
+        </p>
+      )}
+
       {paths.length > 0 && (
         <div className="mb-2 grid gap-1">
-          {paths.map((p) => (
+          {paths.map((p, i) => (
             <div
-              key={p}
+              key={`${p}-${i}`}
               className="flex items-center gap-2 rounded-md border border-white/8 bg-white/5 px-2 py-1"
             >
               <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-white/80" title={p}>
