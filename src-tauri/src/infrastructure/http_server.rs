@@ -2,7 +2,7 @@ use crate::infrastructure::bot_lifecycle;
 use crate::modules::bot::{repository, service as bot_service};
 use crate::modules::mcp::service as mcp_service;
 use crate::shared::state::{AppState, ConnectionData};
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Json, Sse};
 use axum::routing::{delete, get, post, put};
@@ -76,6 +76,9 @@ pub async fn start_server(state: AppState) {
         .route("/v1/mcp/tools", get(handle_mcp_tools))
         .route("/v1/mcp/config", get(handle_mcp_config_get))
         .route("/v1/mcp/filesystem", put(handle_mcp_filesystem_put))
+        .route("/v1/mcp/servers", get(handle_mcp_servers_list))
+        .route("/v1/mcp/servers/{name}", put(handle_mcp_server_upsert))
+        .route("/v1/mcp/servers/{name}", delete(handle_mcp_server_delete))
         .layer(cors)
         .with_state(state.clone());
 
@@ -311,6 +314,120 @@ async fn handle_mcp_tools(State(state): State<AppState>) -> Json<Vec<McpToolDto>
             })
             .collect(),
     )
+}
+
+// ── MCP server CRUD ──────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct McpServersResponse {
+    servers: std::collections::BTreeMap<String, crate::modules::mcp::types::ServerEntry>,
+}
+
+async fn handle_mcp_servers_list(
+    State(state): State<AppState>,
+) -> Result<Json<McpServersResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e }),
+        )
+    })?;
+    Ok(Json(McpServersResponse {
+        servers: cfg.servers,
+    }))
+}
+
+fn is_valid_server_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+async fn handle_mcp_server_upsert(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(entry): Json<crate::modules::mcp::types::ServerEntry>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    if !is_valid_server_name(&name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "server name must be alphanumeric, hyphens, or underscores (max 64 chars)"
+                    .into(),
+            }),
+        ));
+    }
+
+    if let crate::modules::mcp::types::ServerEntry::Stdio { ref command, .. } = entry {
+        if command.trim().is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "command must not be empty".into(),
+                }),
+            ));
+        }
+    }
+
+    let mut cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e }),
+        )
+    })?;
+
+    cfg.servers.insert(name.clone(), entry);
+
+    mcp_service::save_config(&state.mcp_config_path, &cfg).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e }),
+        )
+    })?;
+
+    state
+        .emit_log("mcp", &format!("server '{name}' saved"))
+        .await;
+    mcp_service::rebuild_registry_into_state(&state, &cfg).await;
+
+    Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))))
+}
+
+async fn handle_mcp_server_delete(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e }),
+        )
+    })?;
+
+    if cfg.servers.remove(&name).is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("server '{name}' not found"),
+            }),
+        ));
+    }
+
+    mcp_service::save_config(&state.mcp_config_path, &cfg).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e }),
+        )
+    })?;
+
+    state
+        .emit_log("mcp", &format!("server '{name}' removed"))
+        .await;
+    mcp_service::rebuild_registry_into_state(&state, &cfg).await;
+
+    Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))))
 }
 
 async fn handle_logs_sse(

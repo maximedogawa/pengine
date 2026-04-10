@@ -5,7 +5,6 @@ import { TerminalPreview } from "../modules/bot/components/TerminalPreview";
 import { useAppSessionStore } from "../modules/bot/store/appSessionStore";
 import { McpToolsPanel } from "../modules/mcp/components/McpToolsPanel";
 import { fetchOllamaModel } from "../modules/ollama/api";
-import { PENGINE_API_BASE } from "../shared/api/config";
 import { TopMenu } from "../shared/ui/TopMenu";
 
 type ServiceInfo = {
@@ -37,25 +36,19 @@ export function DashboardPage() {
 
     setServices([
       {
-        name: "Telegram gateway",
-        status: botConnected ? "running" : "stopped",
-        detail: botConnected ? `@${botUser} long poll active` : "Not connected",
+        name: "Pengine",
+        status: pengineUp ? "running" : "stopped",
+        detail: pengineUp ? "API reachable" : "Not running",
       },
       {
-        name: "Pengine runtime",
-        status: pengineUp ? "running" : "stopped",
-        detail: pengineUp
-          ? `${PENGINE_API_BASE.replace(/^https?:\/\//, "")} reachable`
-          : "App not running",
+        name: "Telegram",
+        status: botConnected ? "running" : "stopped",
+        detail: botConnected ? `@${botUser}` : "Not connected",
       },
       {
         name: "Ollama",
         status: ollamaUp ? "running" : "stopped",
-        detail: ollamaUp
-          ? ollamaModel
-            ? `model: ${ollamaModel}`
-            : "Running, no model loaded"
-          : "Not reachable",
+        detail: ollamaUp ? (ollamaModel ? ollamaModel : "No model loaded") : "Not reachable",
       },
     ]);
   }, [botUsername]);
@@ -76,104 +69,87 @@ export function DashboardPage() {
     }
   };
 
+  const allRunning = services.every((s) => s.status === "running");
+
   return (
     <div className="relative overflow-x-clip pb-20">
       <TopMenu />
 
-      <main className="section-shell pt-10">
-        <section className="max-w-4xl">
-          <p className="mono-label">Dashboard</p>
-          <h1 className="mt-3 text-5xl font-extrabold leading-tight tracking-tight text-white">
-            Connected device and running services
-          </h1>
-          <p className="mt-5 max-w-3xl subtle-copy">
-            The Pengine desktop app is running the bot service. Messages from Telegram are handled
-            locally even when this page is closed.
-          </p>
+      <main className="section-shell pt-6 sm:pt-10">
+        {/* ── Status bar: services + connection ──────────────────── */}
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          {/* Overall status */}
+          <div className="flex items-center gap-2">
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full sm:h-2.5 sm:w-2.5 ${
+                allRunning ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-400"
+              }`}
+            />
+            <p className="font-mono text-xs font-semibold text-white sm:text-sm">
+              {allRunning ? "All systems running" : "Some services offline"}
+            </p>
+          </div>
+
+          <div className="mx-0.5 hidden h-4 w-px bg-white/10 sm:block" />
+
+          {/* Service pills — hide detail text on small screens */}
+          {services.map((service) => (
+            <div
+              key={service.name}
+              className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 sm:px-3"
+            >
+              <span
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                  service.status === "running"
+                    ? "bg-emerald-400"
+                    : service.status === "stopped"
+                      ? "bg-rose-400"
+                      : "bg-yellow-400"
+                }`}
+              />
+              <span className="font-mono text-[10px] text-white/70 sm:text-[11px]">
+                {service.name}
+              </span>
+              <span className="hidden font-mono text-[11px] text-white/40 sm:inline">
+                {service.detail}
+              </span>
+            </div>
+          ))}
+
+          {/* Connection controls */}
+          <div className="ml-auto flex items-center gap-2">
+            {!isDeviceConnected && (
+              <Link
+                to="/setup"
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-1 font-mono text-[11px] text-white/70 transition hover:bg-white/10 hover:text-white"
+              >
+                Setup
+              </Link>
+            )}
+            {isDeviceConnected && (
+              <button
+                type="button"
+                onClick={handleDisconnect}
+                className="rounded-lg border border-rose-300/20 bg-transparent px-3 py-1 font-mono text-[11px] text-rose-300/60 transition hover:bg-rose-300/10 hover:text-rose-200"
+              >
+                Disconnect
+              </button>
+            )}
+          </div>
+        </div>
+
+        {disconnectError && (
+          <p className="mt-2 font-mono text-xs text-rose-300">{disconnectError}</p>
+        )}
+
+        {/* ── Terminal (full width) ────────────────────────────── */}
+        <section className="mt-4 sm:mt-6">
+          <TerminalPreview />
         </section>
 
-        <section className="mt-10 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="space-y-6">
-            <div className="panel p-5">
-              <p className="mono-label">Services</p>
-              <div className="mt-4 grid gap-3">
-                {services.map((service) => (
-                  <div
-                    key={service.name}
-                    className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3"
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-white">{service.name}</p>
-                      <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
-                        {service.detail}
-                      </p>
-                    </div>
-                    <span
-                      className={`rounded-full border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] ${
-                        service.status === "running"
-                          ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-200"
-                          : service.status === "stopped"
-                            ? "border-rose-300/30 bg-rose-300/10 text-rose-200"
-                            : "border-yellow-300/30 bg-yellow-300/10 text-yellow-200"
-                      }`}
-                    >
-                      {service.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <TerminalPreview />
-          </div>
-
-          <div className="grid gap-6">
-            <div className="panel rounded-4xl p-6">
-              <p className="mono-label">Device session</p>
-              {isDeviceConnected ? (
-                <>
-                  <p className="mt-3 text-lg font-semibold text-white">1 connected device</p>
-                  <p className="mt-2 subtle-copy">
-                    Telegram messaging is active and local runtime services are available.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p className="mt-3 text-lg font-semibold text-white">No device connected</p>
-                  <p className="mt-2 subtle-copy">
-                    Run through the setup wizard to connect your Telegram bot.
-                  </p>
-                  <Link
-                    to="/setup"
-                    className="primary-button mt-5 inline-block rounded-xl px-5 py-2 text-xs"
-                  >
-                    Go to setup
-                  </Link>
-                </>
-              )}
-            </div>
-
-            {isDeviceConnected && (
-              <div className="panel p-6">
-                <p className="mono-label">Controls</p>
-                <p className="mt-3 subtle-copy">
-                  Disconnect the current device session and return to setup.
-                </p>
-                {disconnectError && (
-                  <p className="mt-3 font-mono text-xs text-rose-300">{disconnectError}</p>
-                )}
-                <button
-                  type="button"
-                  className="secondary-button mt-5 w-full rounded-xl border-rose-300/30 bg-rose-300/10 text-rose-100 hover:bg-rose-300/15"
-                  onClick={handleDisconnect}
-                >
-                  Disconnect device
-                </button>
-              </div>
-            )}
-
-            <McpToolsPanel />
-          </div>
+        {/* ── Servers & tools ─────────────────────────────────────── */}
+        <section className="mt-4 sm:mt-6">
+          <McpToolsPanel />
         </section>
       </main>
     </div>

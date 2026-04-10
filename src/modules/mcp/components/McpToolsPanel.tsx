@@ -1,30 +1,30 @@
 import * as Accordion from "@radix-ui/react-accordion";
 import { useEffect, useMemo, useState } from "react";
 import {
-  fetchMcpConfig,
+  deleteMcpServer,
+  fetchMcpServers,
   fetchMcpTools,
-  putMcpFilesystemPath,
-  type McpConfigInfo,
+  upsertMcpServer,
   type McpTool,
+  type ServerEntry,
 } from "..";
+import { AddServerForm } from "./AddServerForm";
+import { McpServerCard } from "./McpServerCard";
 
 /**
- * Dashboard panel showing MCP tool *groups*. Each accordion item is one tool
- * group (= one MCP server, e.g. "dice"); expanding it reveals the individual
- * commands that group exposes (e.g. `roll_dice`).
+ * Dashboard panel: filesystem shortcut, server list with CRUD, and tool groups.
  */
 export function McpToolsPanel() {
   const [tools, setTools] = useState<McpTool[] | null>(null);
-  const [config, setConfig] = useState<McpConfigInfo | null>(null);
-  const [pathDraft, setPathDraft] = useState("");
+  const [servers, setServers] = useState<Record<string, ServerEntry> | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<string | null>(null);
 
-  const syncAfterSave = async () => {
-    const [t, c] = await Promise.all([fetchMcpTools(), fetchMcpConfig()]);
+  const reload = async () => {
+    const [t, s] = await Promise.all([fetchMcpTools(), fetchMcpServers()]);
     setTools(t);
-    setConfig(c);
-    if (c?.filesystem_allowed_path) setPathDraft(c.filesystem_allowed_path);
+    setServers(s);
   };
 
   useEffect(() => {
@@ -32,10 +32,9 @@ export function McpToolsPanel() {
     let timer: ReturnType<typeof setTimeout>;
 
     void (async () => {
-      const c = await fetchMcpConfig();
+      const s = await fetchMcpServers();
       if (cancelled) return;
-      setConfig(c);
-      if (c?.filesystem_allowed_path) setPathDraft(c.filesystem_allowed_path);
+      setServers(s);
     })();
 
     const pollTools = async () => {
@@ -53,36 +52,44 @@ export function McpToolsPanel() {
     };
   }, []);
 
-  const applyPath = async (path: string) => {
-    const trimmed = path.trim();
-    if (!trimmed) {
-      setNotice("Enter a folder path");
-      return;
-    }
+  // ── Server CRUD handlers ───────────────────────────────────────────
+
+  const handleSaveServer = async (name: string, entry: ServerEntry) => {
     setBusy(true);
     setNotice(null);
-    const ok = await putMcpFilesystemPath(trimmed);
-    setBusy(false);
+    const ok = await upsertMcpServer(name, entry);
     if (!ok) {
-      setNotice("Could not save (is the API running?)");
+      setNotice(`Could not save "${name}"`);
+      setBusy(false);
       return;
     }
-    await syncAfterSave();
-    setNotice("Saved — tools reloaded");
+    setEditingName(null);
+    await reload();
+    setBusy(false);
+    setNotice(`Server "${name}" saved — tools reloaded`);
   };
 
-  const pickFolder = async () => {
+  const handleDeleteServer = async (name: string) => {
+    setBusy(true);
     setNotice(null);
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const picked = await invoke<string | null>("pick_mcp_filesystem_folder");
-      if (picked) await applyPath(picked);
-    } catch {
-      setNotice("Folder picker needs the desktop app");
+    const ok = await deleteMcpServer(name);
+    if (!ok) {
+      setNotice(`Could not remove "${name}"`);
+      setBusy(false);
+      return;
     }
+    await reload();
+    setBusy(false);
+    setNotice(`Server "${name}" removed`);
   };
 
-  // Bucket tools by their server (group) name. Stable, alphabetical order.
+  // ── Derived data ───────────────────────────────────────────────────
+
+  const serverEntries = useMemo(() => {
+    if (!servers) return null;
+    return Object.entries(servers).sort(([a], [b]) => a.localeCompare(b));
+  }, [servers]);
+
   const groups = useMemo(() => {
     if (!tools) return null;
     const map = new Map<string, McpTool[]>();
@@ -96,105 +103,103 @@ export function McpToolsPanel() {
       .map(([server, items]) => ({ server, items }));
   }, [tools]);
 
-  const sourceLabel =
-    config == null
-      ? "…"
-      : config.source === "project"
-        ? "Project (src-tauri/mcp.json)"
-        : "App data mcp.json";
-
   return (
-    <div className="panel p-6">
-      <p className="mono-label">MCP config</p>
-      <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3">
-        <p className="text-xs text-(--mid)">{sourceLabel}</p>
-        <p
-          className="mt-1 font-mono text-[11px] text-white/80 break-all"
-          title={config?.config_path}
-        >
-          {config?.config_path ?? "…"}
-        </p>
-        <p className="mt-2 text-[11px] uppercase tracking-[0.12em] text-(--mid)">
-          Filesystem allow folder
-        </p>
-        <input
-          type="text"
-          value={pathDraft}
-          onChange={(e) => setPathDraft(e.target.value)}
-          placeholder="/absolute/path/to/project"
-          className="mt-1.5 w-full rounded-lg border border-white/15 bg-white/5 px-2.5 py-2 font-mono text-xs text-white outline-none placeholder:text-white/25 focus:border-white/30"
-        />
-        <div className="mt-2 flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => applyPath(pathDraft)}
-            className="rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/15 disabled:opacity-40"
-          >
-            Apply path
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={pickFolder}
-            className="rounded-lg border border-white/15 bg-transparent px-3 py-1.5 text-xs text-(--mid) hover:border-white/25 hover:text-white disabled:opacity-40"
-          >
-            Choose folder…
-          </button>
+    <div className="panel p-4 sm:p-6">
+      {notice && <p className="mb-3 font-mono text-[11px] text-fuchsia-200/90">{notice}</p>}
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        {/* ── Servers ─────────────────────────────────────────────── */}
+        <div className="min-w-0">
+          <p className="mono-label">Servers</p>
+
+          {serverEntries === null && (
+            <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
+              Loading…
+            </p>
+          )}
+
+          {serverEntries !== null && (
+            <div className="mt-3 grid gap-2">
+              {serverEntries.map(([name, entry]) => (
+                <McpServerCard
+                  key={name}
+                  name={name}
+                  entry={entry}
+                  tools={tools ?? []}
+                  busy={busy}
+                  editingName={editingName}
+                  onSave={handleSaveServer}
+                  onDelete={handleDeleteServer}
+                  onEditStart={setEditingName}
+                />
+              ))}
+            </div>
+          )}
+
+          <AddServerForm busy={busy} onAdd={handleSaveServer} />
         </div>
-        {notice && <p className="mt-2 font-mono text-[11px] text-fuchsia-200/90">{notice}</p>}
+
+        {/* ── Available tools ─────────────────────────────────────── */}
+        <div className="min-w-0">
+          <p className="mono-label">Available tools</p>
+
+          {groups === null && (
+            <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
+              Loading…
+            </p>
+          )}
+
+          {groups !== null && groups.length === 0 && (
+            <p className="mt-3 subtle-copy">No MCP tools connected.</p>
+          )}
+
+          {groups !== null && groups.length > 0 && (
+            <Accordion.Root type="multiple" defaultValue={[]} className="mt-3 grid gap-2">
+              {groups.map((group) => (
+                <Accordion.Item
+                  key={group.server}
+                  value={group.server}
+                  className="overflow-hidden rounded-xl border border-white/10 bg-white/5 sm:rounded-2xl"
+                >
+                  <Accordion.Header>
+                    <Accordion.Trigger className="group flex w-full min-w-0 items-center justify-between gap-4 px-3 py-2.5 text-left sm:px-4 sm:py-3">
+                      <div className="min-w-0">
+                        <p
+                          className="truncate text-sm font-semibold text-white"
+                          title={group.server}
+                        >
+                          {group.server}
+                        </p>
+                        <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
+                          {group.items.length} command
+                          {group.items.length === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                      <span className="font-mono text-xs text-(--mid) transition group-data-[state=open]:rotate-45">
+                        +
+                      </span>
+                    </Accordion.Trigger>
+                  </Accordion.Header>
+                  <Accordion.Content className="border-t border-white/10 px-3 py-2.5 sm:px-4 sm:py-3">
+                    <ul className="grid gap-1.5">
+                      {group.items.map((tool) => (
+                        <li key={tool.name}>
+                          <p className="break-all font-mono text-xs text-white">{tool.name}</p>
+                          {tool.description && (
+                            <p className="mt-0.5 wrap-break-word text-[11px] leading-snug text-(--mid) sm:text-xs">
+                              {tool.description}
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </Accordion.Content>
+                </Accordion.Item>
+              ))}
+            </Accordion.Root>
+          )}
+        </div>
       </div>
-
-      <p className="mono-label mt-8">Available tools</p>
-
-      {groups === null && (
-        <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
-          Loading…
-        </p>
-      )}
-
-      {groups !== null && groups.length === 0 && (
-        <p className="mt-3 subtle-copy">No MCP tools connected.</p>
-      )}
-
-      {groups !== null && groups.length > 0 && (
-        <Accordion.Root type="multiple" defaultValue={[]} className="mt-4 grid gap-2">
-          {groups.map((group) => (
-            <Accordion.Item
-              key={group.server}
-              value={group.server}
-              className="overflow-hidden rounded-2xl border border-white/10 bg-white/5"
-            >
-              <Accordion.Header>
-                <Accordion.Trigger className="group flex w-full items-center justify-between gap-4 px-4 py-3 text-left">
-                  <div>
-                    <p className="text-sm font-semibold text-white">{group.server}</p>
-                    <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
-                      {group.items.length} command
-                      {group.items.length === 1 ? "" : "s"}
-                    </p>
-                  </div>
-                  <span className="font-mono text-xs text-(--mid) transition group-data-[state=open]:rotate-45">
-                    +
-                  </span>
-                </Accordion.Trigger>
-              </Accordion.Header>
-              <Accordion.Content className="border-t border-white/10 px-4 py-3">
-                <ul className="grid gap-2">
-                  {group.items.map((tool) => (
-                    <li key={tool.name}>
-                      <p className="font-mono text-xs text-white">{tool.name}</p>
-                      {tool.description && (
-                        <p className="mt-0.5 text-xs text-(--mid)">{tool.description}</p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </Accordion.Content>
-            </Accordion.Item>
-          ))}
-        </Accordion.Root>
-      )}
     </div>
   );
 }
