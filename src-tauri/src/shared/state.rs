@@ -1,9 +1,10 @@
+use crate::modules::mcp::registry::ToolRegistry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Emitter;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionData {
@@ -27,11 +28,20 @@ pub struct AppState {
     pub bot_running: Arc<Mutex<bool>>,
     pub log_tx: Arc<Mutex<Option<tokio::sync::broadcast::Sender<LogEntry>>>>,
     pub store_path: PathBuf,
+    /// Resolved `mcp.json` path (project `src-tauri/mcp.json` when present, else app data dir).
+    pub mcp_config_path: PathBuf,
+    /// `"project"` or `"app_data"` — for dashboard copy only.
+    pub mcp_config_source: String,
     pub app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
+    pub mcp: Arc<RwLock<ToolRegistry>>,
+    pub mcp_config_mutex: Arc<Mutex<()>>,
+    pub preferred_ollama_model: Arc<RwLock<Option<String>>>,
+    /// Allowed filesystem paths from `mcp.json` (updated with MCP rebuild); avoids disk read per agent turn.
+    pub cached_filesystem_paths: Arc<RwLock<Vec<String>>>,
 }
 
 impl AppState {
-    pub fn new(store_path: PathBuf) -> Self {
+    pub fn new(store_path: PathBuf, mcp_config_path: PathBuf, mcp_config_source: String) -> Self {
         let (log_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             connection: Arc::new(Mutex::new(None)),
@@ -39,7 +49,13 @@ impl AppState {
             bot_running: Arc::new(Mutex::new(false)),
             log_tx: Arc::new(Mutex::new(Some(log_tx))),
             store_path,
+            mcp_config_path,
+            mcp_config_source,
             app_handle: Arc::new(Mutex::new(None)),
+            mcp: Arc::new(RwLock::new(ToolRegistry::default())),
+            mcp_config_mutex: Arc::new(Mutex::new(())),
+            preferred_ollama_model: Arc::new(RwLock::new(None)),
+            cached_filesystem_paths: Arc::new(RwLock::new(Vec::new())),
         }
     }
 

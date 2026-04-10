@@ -82,16 +82,83 @@ async function mockApis(page: import("@playwright/test").Page) {
       await route.continue();
     }
   });
+
+  await page.route(`${PENGINE_API_BASE}/v1/ollama/models`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        reachable: true,
+        active_model: "qwen3-coder:30b",
+        selected_model: null,
+        models: ["qwen3-coder:30b"],
+      }),
+    });
+  });
+
+  await page.route(`${PENGINE_API_BASE}/v1/ollama/model`, async (route) => {
+    if (route.request().method() === "PUT") {
+      let selected_model: string | null = null;
+      const raw = route.request().postData();
+      if (raw) {
+        try {
+          const body = JSON.parse(raw) as { model?: string | null };
+          let m: string | null = null;
+          if (typeof body.model === "string") m = body.model.trim();
+          selected_model = m && m.length > 0 ? m : null;
+        } catch {
+          /* ignore malformed body */
+        }
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ selected_model }),
+      });
+    } else {
+      await route.continue();
+    }
+  });
+
+  await page.route(
+    (url) => url.href.startsWith(`${PENGINE_API_BASE}/v1/mcp/servers`),
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ servers: {} }),
+      });
+    },
+  );
+
+  await page.route(
+    (url) => url.href.startsWith(`${PENGINE_API_BASE}/v1/mcp/tools`),
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    },
+  );
 }
 
 test.describe("setup to dashboard flow", () => {
   test("shows 'no device' on dashboard when disconnected", async ({ page }) => {
+    // Force offline so the assertion does not depend on a local Pengine/Ollama install.
+    await page.route(`${PENGINE_API_BASE}/v1/health`, async (route) => {
+      await route.abort("failed");
+    });
+    await page.route(`${PENGINE_API_BASE}/v1/ollama/models`, async (route) => {
+      await route.abort("failed");
+    });
+
     await page.goto("/dashboard");
     await expect(page.getByTestId("app-ready")).toBeVisible();
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByText("No device connected")).toBeVisible();
-    await expect(page.getByRole("link", { name: "Go to setup" })).toBeVisible();
+    await expect(page.getByText("Some services offline")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("link", { name: "Setup", exact: true })).toBeVisible();
   });
 
   test("walks all setup wizard steps and opens dashboard", async ({ page }) => {
@@ -128,10 +195,8 @@ test.describe("setup to dashboard flow", () => {
     await page.getByRole("button", { name: "Open dashboard" }).click();
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(
-      page.getByRole("heading", { name: "Connected device and running services" }),
-    ).toBeVisible();
-    await expect(page.getByText("Telegram gateway")).toBeVisible();
+    await expect(page.getByText("All systems running")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("@TestPengineBot")).toBeVisible();
   });
 
   test("loads dashboard when device is already connected", async ({ page }) => {
@@ -144,6 +209,7 @@ test.describe("setup to dashboard flow", () => {
     await expect(page.getByTestId("app-ready")).toBeVisible();
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByText("1 connected device")).toBeVisible();
+    await expect(page.getByText("All systems running")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "Disconnect" })).toBeVisible();
   });
 });

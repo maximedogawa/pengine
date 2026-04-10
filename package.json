@@ -30,9 +30,11 @@
     ]
   },
   "dependencies": {
+    "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-menubar": "^1.1.16",
     "@tailwindcss/vite": "^4.2.2",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "qrcode.react": "^4.2.0",
     "react": "^19.1.0",

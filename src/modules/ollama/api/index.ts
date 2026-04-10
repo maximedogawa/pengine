@@ -1,5 +1,5 @@
-import { OLLAMA_API_BASE } from "../../../shared/api/config";
-import type { OllamaProbe } from "../types";
+import { OLLAMA_API_BASE, PENGINE_API_BASE } from "../../../shared/api/config";
+import type { OllamaModelsResponse, OllamaProbe } from "../types";
 
 /** Prefer loaded model from `/api/ps`, else first pulled model from `/api/tags`. */
 export async function fetchOllamaModel(timeoutMs = 3000): Promise<OllamaProbe> {
@@ -23,5 +23,46 @@ export async function fetchOllamaModel(timeoutMs = 3000): Promise<OllamaProbe> {
     return { reachable: false, model: null };
   } catch {
     return { reachable: false, model: null };
+  }
+}
+
+export async function fetchOllamaModels(timeoutMs = 3000): Promise<OllamaModelsResponse> {
+  try {
+    const resp = await fetch(`${PENGINE_API_BASE}/v1/ollama/models`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) {
+      return { reachable: false, active_model: null, selected_model: null, models: [] };
+    }
+    return (await resp.json()) as OllamaModelsResponse;
+  } catch {
+    return { reachable: false, active_model: null, selected_model: null, models: [] };
+  }
+}
+
+export async function setPreferredOllamaModel(
+  model: string | null,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const resp = await fetch(`${PENGINE_API_BASE}/v1/ollama/model`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (resp.ok) return { ok: true };
+
+    const raw = await resp.text();
+    const fallback = `Request failed (HTTP ${resp.status})`;
+    let message = fallback;
+    try {
+      const body = JSON.parse(raw) as { error?: string; message?: string };
+      message = body.error || body.message || raw.trim() || fallback;
+    } catch {
+      message = raw.trim() || fallback;
+    }
+    return { ok: false, error: message };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Request failed" };
   }
 }

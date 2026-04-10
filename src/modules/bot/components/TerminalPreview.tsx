@@ -13,6 +13,7 @@ function kindClass(kind: string) {
   if (kind === "ok") return "bg-emerald-400/10 text-emerald-300";
   if (kind === "run") return "bg-sky-400/10 text-sky-300";
   if (kind === "tool") return "bg-yellow-400/10 text-yellow-200";
+  if (kind === "time") return "bg-fuchsia-400/10 text-fuchsia-200";
   if (kind === "reply") return "bg-violet-400/10 text-violet-300";
   if (kind === "msg") return "bg-cyan-400/10 text-cyan-300";
   return "bg-slate-400/10 text-slate-300";
@@ -121,7 +122,7 @@ export function TerminalPreview() {
       </div>
       <div
         ref={scrollRef}
-        className="max-h-64 space-y-3 overflow-y-auto px-4 py-5 font-mono text-sm"
+        className="h-56 space-y-2.5 overflow-y-auto px-3 py-4 font-mono text-xs sm:h-80 sm:space-y-3 sm:px-4 sm:py-5 sm:text-sm"
       >
         {lines.map((line, i) => (
           <div key={`${line.timestamp}-${i}`} className="flex flex-wrap items-center gap-2">
