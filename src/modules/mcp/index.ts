@@ -73,17 +73,17 @@ export async function putMcpFilesystemPaths(paths: string[], timeoutMs = 15000):
   }
 }
 
-/** GET `/v1/mcp/tools` — flat list of tools across all connected MCP servers. */
-export async function fetchMcpTools(timeoutMs = 3000): Promise<McpTool[]> {
+/** GET `/v1/mcp/tools` — flat list of tools across all connected MCP servers. `null` = request failed. */
+export async function fetchMcpTools(timeoutMs = 3000): Promise<McpTool[] | null> {
   const { signal, cleanup } = makeTimeoutSignal(timeoutMs);
   try {
     const resp = await fetch(`${PENGINE_API_BASE}/v1/mcp/tools`, {
       signal,
     });
-    if (!resp.ok) return [];
+    if (!resp.ok) return null;
     return (await resp.json()) as McpTool[];
   } catch {
-    return [];
+    return null;
   } finally {
     cleanup();
   }

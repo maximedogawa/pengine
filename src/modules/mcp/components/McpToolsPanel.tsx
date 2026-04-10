@@ -1,5 +1,5 @@
 import * as Accordion from "@radix-ui/react-accordion";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteMcpServer,
   fetchMcpServers,
@@ -17,38 +17,104 @@ import { McpServerCard } from "./McpServerCard";
 export function McpToolsPanel() {
   const [tools, setTools] = useState<McpTool[] | null>(null);
   const [servers, setServers] = useState<Record<string, ServerEntry> | null>(null);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const [serversError, setServersError] = useState<string | null>(null);
+  const [toolsLoading, setToolsLoading] = useState(true);
+  const [serversLoading, setServersLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string | null>(null);
 
-  const reload = async () => {
+  const toolsSeqRef = useRef(0);
+  const serversSeqRef = useRef(0);
+  const cancelledRef = useRef(false);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleToolsPollRef = useRef<(delay: number) => void>(() => {});
+  const toolsRef = useRef<McpTool[] | null>(null);
+  toolsRef.current = tools;
+
+  const reload = useCallback(async () => {
+    setServersLoading(true);
+    setToolsLoading(true);
+    const sId = ++serversSeqRef.current;
+    const tId = ++toolsSeqRef.current;
     const [t, s] = await Promise.all([fetchMcpTools(), fetchMcpServers()]);
-    setTools(t);
-    setServers(s);
-  };
+    if (cancelledRef.current) return;
+
+    if (sId === serversSeqRef.current) {
+      setServersLoading(false);
+      if (s !== null) {
+        setServers(s);
+        setServersError(null);
+      } else {
+        setServersError("Could not load MCP servers");
+      }
+    }
+
+    if (tId === toolsSeqRef.current) {
+      setToolsLoading(false);
+      if (t !== null) {
+        setTools(t);
+        setToolsError(null);
+      } else {
+        setToolsError("Could not load MCP tools");
+      }
+      const next = t !== null && t.length > 0 ? 10_000 : 30_000;
+      scheduleToolsPollRef.current(next);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
+    cancelledRef.current = false;
 
-    void (async () => {
-      const s = await fetchMcpServers();
-      if (cancelled) return;
-      setServers(s);
-    })();
+    const schedulePoll = (delay: number) => {
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = setTimeout(runPoll, delay);
+    };
+    scheduleToolsPollRef.current = schedulePoll;
 
-    const pollTools = async () => {
+    const runPoll = async () => {
+      pollTimerRef.current = null;
+      const tId = ++toolsSeqRef.current;
+      if (toolsRef.current === null) setToolsLoading(true);
       const data = await fetchMcpTools();
-      if (cancelled) return;
-      setTools(data);
-      const next = data.length > 0 ? 10_000 : 30_000;
-      timer = setTimeout(() => pollTools(), next);
+      if (cancelledRef.current) return;
+      if (tId !== toolsSeqRef.current) return;
+
+      setToolsLoading(false);
+      if (data !== null) {
+        setTools(data);
+        setToolsError(null);
+      } else {
+        setToolsError("Could not load MCP tools");
+      }
+      const next = data !== null && data.length > 0 ? 10_000 : 30_000;
+      schedulePoll(next);
     };
 
-    pollTools();
+    const loadServersOnce = async () => {
+      const sId = ++serversSeqRef.current;
+      setServersLoading(true);
+      const s = await fetchMcpServers();
+      if (cancelledRef.current) return;
+      if (sId !== serversSeqRef.current) return;
+      setServersLoading(false);
+      if (s !== null) {
+        setServers(s);
+        setServersError(null);
+      } else {
+        setServersError("Could not load MCP servers");
+      }
+    };
+
+    void loadServersOnce();
+    schedulePoll(0);
+
     return () => {
-      cancelled = true;
-      clearTimeout(timer);
+      cancelledRef.current = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+      scheduleToolsPollRef.current = () => {};
     };
   }, []);
 
@@ -112,16 +178,37 @@ export function McpToolsPanel() {
 
   return (
     <div className="panel p-4 sm:p-6">
-      {notice && <p className="mb-3 font-mono text-[11px] text-fuchsia-200/90">{notice}</p>}
+      {notice && (
+        <p
+          className="mb-3 font-mono text-[11px] text-fuchsia-200/90"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {notice}
+        </p>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         {/* ── Servers ─────────────────────────────────────────────── */}
         <div className="min-w-0">
           <p className="mono-label">Servers</p>
 
-          {serverEntries === null && (
+          {serversError && servers !== null && (
+            <p className="mt-2 font-mono text-[11px] text-amber-200/90" role="alert">
+              {serversError}
+            </p>
+          )}
+
+          {serversLoading && servers === null && !serversError && (
             <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
               Loading…
+            </p>
+          )}
+
+          {serversError && servers === null && !serversLoading && (
+            <p className="mt-3 font-mono text-[11px] text-rose-300" role="alert">
+              {serversError}
             </p>
           )}
 
@@ -152,9 +239,21 @@ export function McpToolsPanel() {
         <div className="min-w-0">
           <p className="mono-label">Available tools</p>
 
-          {groups === null && (
+          {toolsError && tools !== null && (
+            <p className="mt-2 font-mono text-[11px] text-amber-200/90" role="alert">
+              {toolsError}
+            </p>
+          )}
+
+          {toolsLoading && tools === null && !toolsError && (
             <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.14em] text-(--mid)">
               Loading…
+            </p>
+          )}
+
+          {toolsError && tools === null && !toolsLoading && (
+            <p className="mt-3 font-mono text-[11px] text-rose-300" role="alert">
+              {toolsError}
             </p>
           )}
 
