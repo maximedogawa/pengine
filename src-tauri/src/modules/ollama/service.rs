@@ -49,9 +49,9 @@ pub async fn model_catalog(timeout_ms: u64) -> Result<ModelCatalog, String> {
         })
         .unwrap_or_default();
 
-    if let Some(a) = active.clone() {
-        if !models.iter().any(|m| m == &a) {
-            models.insert(0, a);
+    if let Some(ref a) = active {
+        if !models.iter().any(|m| m == a) {
+            models.insert(0, a.clone());
         }
     }
 
@@ -72,38 +72,82 @@ pub async fn active_model() -> Result<String, String> {
         .ok_or_else(|| "no models pulled in ollama".to_string())
 }
 
+/// Outcome of a single chat call so the caller knows whether tools were used.
+pub struct ChatResult {
+    pub message: serde_json::Value,
+    /// `true` when the model actually received tools; `false` when we had to
+    /// fall back to a plain chat because the model doesn't support them.
+    pub tools_supported: bool,
+}
+
 /// Tool-aware chat for the agent loop. Sends a full message history plus a
 /// list of tool definitions and returns the raw assistant message (which may
 /// contain `tool_calls`). Caller is responsible for executing tools and
-/// looping. Returns the `message` object verbatim.
+/// looping.
+///
+/// If the model rejects tools (HTTP 400 "does not support tools"), the request
+/// is transparently retried without tools so older models still work.
 pub async fn chat_with_tools(
     model: &str,
     messages: &serde_json::Value,
     tools: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let payload = serde_json::json!({
+) -> Result<ChatResult, String> {
+    let has_tools = tools.as_array().is_some_and(|a| !a.is_empty());
+
+    let mut payload = serde_json::json!({
         "model": model,
         "messages": messages,
-        "tools": tools,
         "stream": false,
     });
+    if has_tools {
+        payload["tools"] = tools.clone();
+    }
 
+    let (status, body) = post_chat(&payload).await?;
+
+    if !status.is_success() {
+        let err_text = body["error"].as_str().unwrap_or("");
+        if has_tools && err_text.contains("does not support tools") {
+            let plain = serde_json::json!({
+                "model": model,
+                "messages": messages,
+                "stream": false,
+            });
+            let (st, b) = post_chat(&plain).await?;
+            if !st.is_success() {
+                return Err(format!("ollama chat HTTP {st}: {b}"));
+            }
+            return Ok(ChatResult {
+                message: extract_message(&b),
+                tools_supported: false,
+            });
+        }
+        return Err(format!("ollama chat HTTP {status}: {body}"));
+    }
+
+    Ok(ChatResult {
+        message: extract_message(&body),
+        tools_supported: has_tools,
+    })
+}
+
+async fn post_chat(
+    payload: &serde_json::Value,
+) -> Result<(reqwest::StatusCode, serde_json::Value), String> {
     let resp = http_client()
         .post(OLLAMA_CHAT_URL)
-        .json(&payload)
+        .json(payload)
         .timeout(std::time::Duration::from_secs(120))
         .send()
         .await
         .map_err(|e| e.to_string())?;
-
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    if !status.is_success() {
-        return Err(format!("ollama chat HTTP {status}: {body}"));
-    }
+    Ok((status, body))
+}
 
-    Ok(body
-        .get("message")
+fn extract_message(body: &serde_json::Value) -> serde_json::Value {
+    body.get("message")
         .cloned()
-        .unwrap_or(serde_json::Value::Null))
+        .unwrap_or(serde_json::Value::Null)
 }

@@ -80,11 +80,28 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
     ]);
 
     let mut tool_results: Vec<(String, String)> = Vec::new();
+    let mut tools_supported = true;
+    let empty_tools = json!([]);
 
     // Phase 1: let the model call tools (up to MAX_STEPS rounds).
     for step in 0..MAX_STEPS {
         let t_model = Instant::now();
-        let msg = ollama::chat_with_tools(&model, &messages, &ollama_tools).await?;
+        let effective_tools = if tools_supported {
+            &ollama_tools
+        } else {
+            &empty_tools
+        };
+        let result = ollama::chat_with_tools(&model, &messages, effective_tools).await?;
+        let msg = result.message;
+        if !result.tools_supported && tools_supported {
+            tools_supported = false;
+            state
+                .emit_log(
+                    "tool",
+                    &format!("{model} does not support tools — answering without them"),
+                )
+                .await;
+        }
         state
             .emit_log(
                 "time",
@@ -223,7 +240,8 @@ pub async fn run_turn(state: &AppState, user_message: &str) -> Result<TurnResult
 
         let empty = json!([]);
         let t_summary = Instant::now();
-        let summary_msg = ollama::chat_with_tools(&model, &summary_messages, &empty).await?;
+        let summary_result = ollama::chat_with_tools(&model, &summary_messages, &empty).await?;
+        let summary_msg = summary_result.message;
         state
             .emit_log(
                 "time",

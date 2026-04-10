@@ -23,8 +23,8 @@ export function DashboardPage() {
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [savingModel, setSavingModel] = useState(false);
   const [services, setServices] = useState<ServiceInfo[]>([
-    { name: "Telegram gateway", status: "checking", detail: "Checking…" },
-    { name: "Pengine runtime", status: "checking", detail: "Checking…" },
+    { name: "Pengine", status: "checking", detail: "Checking…" },
+    { name: "Telegram", status: "checking", detail: "Checking…" },
     { name: "Ollama", status: "checking", detail: "Checking…" },
   ]);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);

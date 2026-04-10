@@ -1,5 +1,4 @@
-import { OLLAMA_API_BASE } from "../../../shared/api/config";
-import { PENGINE_API_BASE } from "../../../shared/api/config";
+import { OLLAMA_API_BASE, PENGINE_API_BASE } from "../../../shared/api/config";
 import type { OllamaModelsResponse, OllamaProbe } from "../types";
 
 /** Prefer loaded model from `/api/ps`, else first pulled model from `/api/tags`. */
