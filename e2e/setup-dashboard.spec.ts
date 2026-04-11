@@ -120,18 +120,21 @@ async function mockApis(page: import("@playwright/test").Page) {
     }
   });
 
-  await page.route(`${PENGINE_API_BASE}/v1/toolengine/runtime`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        available: true,
-        kind: "podman",
-        version: "5.0.0",
-        rootless: true,
-      }),
-    });
-  });
+  await page.route(
+    (url) => url.href.startsWith(`${PENGINE_API_BASE}/v1/toolengine/runtime`),
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          available: true,
+          kind: "podman",
+          version: "5.0.0",
+          rootless: true,
+        }),
+      });
+    },
+  );
 
   await page.route(
     (url) => url.href.startsWith(`${PENGINE_API_BASE}/v1/mcp/servers`),

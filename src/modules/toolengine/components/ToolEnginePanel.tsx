@@ -18,6 +18,7 @@ export function ToolEnginePanel() {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyTool, setBusyTool] = useState<string | null>(null);
+  const [busyKind, setBusyKind] = useState<"install" | "uninstall" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const cancelledRef = useRef(false);
@@ -53,6 +54,7 @@ export function ToolEnginePanel() {
 
   const handleInstall = async (toolId: string) => {
     setBusyTool(toolId);
+    setBusyKind("install");
     setNotice(null);
     setActionError(null);
     try {
@@ -66,12 +68,16 @@ export function ToolEnginePanel() {
       }
       await loadData();
     } finally {
-      if (!cancelledRef.current) setBusyTool(null);
+      if (!cancelledRef.current) {
+        setBusyTool(null);
+        setBusyKind(null);
+      }
     }
   };
 
   const handleUninstall = async (toolId: string) => {
     setBusyTool(toolId);
+    setBusyKind("uninstall");
     setNotice(null);
     setActionError(null);
     try {
@@ -85,7 +91,10 @@ export function ToolEnginePanel() {
       }
       await loadData();
     } finally {
-      if (!cancelledRef.current) setBusyTool(null);
+      if (!cancelledRef.current) {
+        setBusyTool(null);
+        setBusyKind(null);
+      }
     }
   };
 
@@ -139,6 +148,38 @@ export function ToolEnginePanel() {
         <p className="mt-3 font-mono text-[11px] text-rose-300" role="alert">
           {catalogError}
         </p>
+      )}
+
+      {busyTool && busyKind && (
+        <div
+          className="mt-4 rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2.5"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+          aria-valuetext={
+            busyKind === "install"
+              ? `Installing container image ${busyTool}`
+              : `Removing container image ${busyTool}`
+          }
+        >
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-(--mid)">
+              {busyKind === "install" ? "Pulling image" : "Removing image"}
+            </p>
+            <p className="truncate font-mono text-[10px] text-white/45" title={busyTool}>
+              {busyTool}
+            </p>
+          </div>
+          <div className="install-progress-track mt-2.5">
+            <div
+              className={
+                busyKind === "install"
+                  ? "install-progress-sheen"
+                  : "install-progress-sheen install-progress-sheen--remove"
+              }
+            />
+          </div>
+        </div>
       )}
 
       {/* Catalog */}
@@ -210,7 +251,7 @@ export function ToolEnginePanel() {
                       <Accordion.Trigger className="group flex w-full min-w-0 items-center justify-between gap-3 px-2.5 py-2 text-left sm:px-3 sm:py-2.5">
                         <div className="min-w-0">
                           <p className="truncate text-xs font-semibold text-white/90">
-                            Docker command list
+                            Container commands
                           </p>
                           <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-(--mid)">
                             {tool.commands.length} MCP tool

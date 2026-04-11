@@ -139,7 +139,7 @@ ollama pull qwen3:8b`}</code>
           </div>
         )}
 
-        {ollamaModel && (
+        {ollamaModel && ollamaReachable === true && (
           <p className="mt-3 font-mono text-xs text-emerald-300">Ready to continue.</p>
         )}
       </div>
@@ -500,11 +500,11 @@ export function WizardStepConnect(props: {
             <p>{pengineReachable ? "✓" : "○"} Pengine running</p>
             <p>{connectStatus === "connected" ? "✓" : "○"} Bot connected</p>
           </div>
-          {connectStatus === "connected" && (
+          {connectStatus === "connected" && onCompleteSetup && (
             <button
               type="button"
               className="primary-button mt-5 w-full rounded-xl text-xs"
-              onClick={() => onCompleteSetup?.()}
+              onClick={() => onCompleteSetup()}
             >
               Open dashboard
             </button>
