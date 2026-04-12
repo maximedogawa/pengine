@@ -26,10 +26,7 @@
       "mount_workspace": true,
       "append_workspace_roots": true,
       "direct_return": true,
-      "mcp_server_cmd": [
-        "node",
-        "/mcp/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js"
-      ],
+      "mcp_server_cmd": [],
       "commands": [
         { "name": "read_text_file", "description": "Read a file as UTF-8 text; optional head/tail line limits" },
         { "name": "read_media_file", "description": "Read image or audio as base64 with MIME type" },

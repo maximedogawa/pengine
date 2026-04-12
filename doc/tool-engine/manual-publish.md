@@ -138,6 +138,16 @@ Alternatively, push an annotated-style tag such as **`file-manager-v0.2.0`** to 
 
 ---
 
+## Troubleshooting: “MCP servers” list shows a tool but **0 commands**
+
+The **Tools** column reads `mcp.json` (every server entry). The **Commands** column lists tools only for servers that **successfully connected** and returned `tools/list` over stdio (or native definitions).
+
+If `mcp.json` looks valid but a **stdio** Tool Engine server shows **0 commands**, the usual cause is bad **`podman run` argv**, not invalid JSON. For images whose **Dockerfile already sets `ENTRYPOINT`** to the MCP server, the catalog’s `mcp_server_cmd` must be **`[]`**. Extra `node …/index.js` tokens are appended as **argv to that process** (filesystem MCP treats them as directory roots), which breaks startup so nothing is registered.
+
+After changing the embedded catalog, restart Pengine or trigger a workspace / config sync so `mcp.json` args are rewritten, or **reinstall** the tool from the Tool Engine panel.
+
+---
+
 ## Related files
 
 - Tool source and `Dockerfile`: `tools/<slug>/`

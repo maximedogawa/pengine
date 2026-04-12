@@ -9,8 +9,5 @@
   "mount_read_only": true,
   "append_workspace_roots": true,
   "direct_return": true,
-  "mcp_server_cmd": [
-    "node",
-    "/mcp/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js"
-  ]
+  "mcp_server_cmd": []
 }
