@@ -1,6 +1,7 @@
 import * as Accordion from "@radix-ui/react-accordion";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { notifyMcpRegistryChanged } from "../../../shared/mcpEvents";
+import { useRegistryChanged } from "../../../shared/useRegistryChanged";
 import {
   fetchRuntimeStatus,
   fetchToolCatalog,
@@ -51,6 +52,8 @@ export function ToolEnginePanel() {
       cancelledRef.current = true;
     };
   }, [loadData]);
+
+  useRegistryChanged(loadData);
 
   const handleInstall = async (toolId: string) => {
     setBusyTool(toolId);
