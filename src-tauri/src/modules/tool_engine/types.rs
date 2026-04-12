@@ -34,6 +34,15 @@ pub struct VersionEntry {
     pub security: bool,
 }
 
+/// Optional npm package pinned inside a container image (see `tools/<slug>/Dockerfile`).
+/// CI passes these as `docker build` args from `catalog/entries/` so the catalog stays the
+/// source of truth for upstream MCP server releases (separate from Pengine’s image `current`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpstreamMcpNpm {
+    pub package: String,
+    pub version: String,
+}
+
 /// One entry in the tool catalog (`tools.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolEntry {
@@ -72,6 +81,9 @@ pub struct ToolEntry {
     /// When true, tool results go directly to the user without model summarisation.
     #[serde(default)]
     pub direct_return: bool,
+    /// When set, image build (`tools-publish.yml`) installs this npm package at this version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_mcp_npm: Option<UpstreamMcpNpm>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

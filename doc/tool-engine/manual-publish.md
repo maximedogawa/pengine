@@ -13,11 +13,11 @@ Images follow the naming used in [`.github/workflows/tools-publish.yml`](../../.
 | Registry host | `ghcr.io` |
 | Repository path | `pengine-ai/tools/pengine-<suffix>` |
 
-The `<suffix>` is the segment after `/` in the tool `id` from `tools/<slug>/pengine-tool.json`. Example: id `pengine/file-manager` → image **`ghcr.io/pengine-ai/tools/pengine-file-manager`**.
+The `<suffix>` is the segment after `/` in the tool `id` in **`catalog/entries/pengine-<slug>.json`** (same as the embedded catalog). Example: id `pengine/file-manager` → image **`ghcr.io/pengine-ai/tools/pengine-file-manager`**.
 
 Tags pushed by CI (and recommended for manual pushes):
 
-- **`<version>`** — e.g. `0.1.0` (from `pengine-tool.json` or from a release tag)
+- **`<version>`** — e.g. `0.1.0` (from catalog **`current`**, or from a release tag)
 - **`latest`** — convenience tag (same digest target as CI may vary over time; prefer a version tag for reproducibility)
 
 Pull examples:
@@ -75,8 +75,9 @@ From the **repository root**, with `SLUG` set to the directory under `tools/` (e
 
 ```bash
 SLUG=file-manager
-VERSION=$(jq -r '.version' "tools/$SLUG/pengine-tool.json")
-IMAGE=ghcr.io/pengine-ai/tools/pengine-$(jq -r '.id | split("/")[1]' "tools/$SLUG/pengine-tool.json")
+CATALOG="catalog/entries/pengine-${SLUG}.json"
+VERSION=$(jq -r '.current' "$CATALOG")
+IMAGE=ghcr.io/pengine-ai/tools/pengine-$(jq -r '.id | split("/")[1]' "$CATALOG")
 MANIFEST="${IMAGE}:${VERSION}"
 ```
 
@@ -148,9 +149,24 @@ After changing the embedded catalog, restart Pengine or trigger a workspace / co
 
 ---
 
+## Upstream MCP npm version (catalog → image build)
+
+For tools whose Docker image installs an npm package (e.g. File Manager), put **`upstream_mcp_npm`** in `catalog/entries/pengine-<slug>.json`:
+
+```json
+"upstream_mcp_npm": {
+  "package": "@modelcontextprotocol/server-filesystem",
+  "version": "2026.1.14"
+}
+```
+
+[`.github/workflows/tools-publish.yml`](../../.github/workflows/tools-publish.yml) reads that block and passes **`UPSTREAM_MCP_NPM_PACKAGE`** / **`UPSTREAM_MCP_NPM_VERSION`** as `docker build` args, so you bump the upstream release in the **catalog entry** (and the embedded `src-tauri/.../tools.json` mirror) instead of editing the Dockerfile for every npm update.
+
+This is separate from Pengine’s **image** version (`current` / `versions[].digest`): that still tracks your published OCI tag and digest.
+
 ## Related files
 
-- Tool source and `Dockerfile`: `tools/<slug>/`
-- Tool manifest: `tools/<slug>/pengine-tool.json`
-- Catalog entry (digests): `catalog/entries/`
+- **`tools/<slug>/pengine-tool.json`** — manifest beside the Dockerfile (id, `version`, limits, mount flags, `upstream_mcp_npm`, …). CI uses it to **discover** publishable dirs; **image tag and jq build-args still come from `catalog/entries/`**. When you bump releases or change container flags, update **both** so the folder stays self-describing and matches the catalog.
+- **Tool image build:** `tools/<slug>/Dockerfile`
+- **Source of truth (id, `current`, digest, `upstream_mcp_npm`):** `catalog/entries/pengine-<slug>.json`
 - CI workflow: `.github/workflows/tools-publish.yml`

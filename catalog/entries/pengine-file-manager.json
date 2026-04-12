@@ -19,6 +19,10 @@
   "mount_workspace": true,
   "append_workspace_roots": true,
   "direct_return": true,
+  "upstream_mcp_npm": {
+    "package": "@modelcontextprotocol/server-filesystem",
+    "version": "2026.1.14"
+  },
   "mcp_server_cmd": [],
   "commands": [
     { "name": "read_text_file", "description": "Read a file as UTF-8 text; optional head/tail line limits" },

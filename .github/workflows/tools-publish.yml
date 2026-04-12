@@ -1,7 +1,8 @@
 name: Publish tool images
 
 # Builds and pushes only tools whose files changed since the last commit.
-# Each tool lives in tools/<slug>/ with a pengine-tool.json manifest.
+# Discovery: tools/<slug>/pengine-tool.json (stable marker; content can stay `{}`).
+# Metadata for image tags + npm: catalog/entries/pengine-<slug>.json. Build: Dockerfile.
 
 on:
   workflow_dispatch:
@@ -39,8 +40,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # List all tool slugs (directories under tools/ that contain pengine-tool.json)
-          all_slugs=$(find tools -maxdepth 2 -name pengine-tool.json -printf '%h\n' | sed 's|^tools/||' | sort)
+          # List slugs that contain pengine-tool.json (marker); keep only if Dockerfile + catalog exist.
+          all_slugs=""
+          while IFS= read -r s; do
+            [[ -z "$s" ]] && continue
+            [[ -f "tools/${s}/Dockerfile" ]] || continue
+            [[ -f "catalog/entries/pengine-${s}.json" ]] || continue
+            all_slugs="${all_slugs}${s}"$'\n'
+          done < <(find tools -maxdepth 2 -name pengine-tool.json -printf '%h\n' | sed 's|^tools/||' | sort -u)
+          all_slugs=$(echo -n "$all_slugs" | sort -u)
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             input="${{ github.event.inputs.tools }}"
@@ -56,24 +64,26 @@ jobs:
             if echo "$all_slugs" | grep -qx "$slug"; then
               slugs="$slug"
             else
-              echo "Tag '$tag' does not match any tool directory"
+              echo "Tag '$tag' does not match any tool (marker + Dockerfile + catalog)"
               echo 'skip=true' >> "$GITHUB_OUTPUT"
               echo 'matrix=[]' >> "$GITHUB_OUTPUT"
               exit 0
             fi
           else
-            # Push to main: find which tools/<slug>/ or catalog/entries/ changed
+            # Push to main: tools/<slug>/ or catalog/entries/pengine-<slug>.json changed
             changed=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git ls-files)
-            slugs=$(echo "$changed" | grep '^tools/' | cut -d/ -f2 | sort -u)
-            # Also rebuild if a catalog entry changed (entry filename matches slug)
-            catalog_slugs=$(echo "$changed" | grep '^catalog/entries/' | sed 's|^catalog/entries/||;s|\.json$||' | sort -u)
-            slugs=$(printf '%s\n%s' "$slugs" "$catalog_slugs" | sort -u | xargs)
+            slugs_tools=$(echo "$changed" | grep '^tools/' | cut -d/ -f2 | sort -u)
+            # catalog/entries/pengine-file-manager.json → slug file-manager
+            slugs_cat=$(echo "$changed" | grep '^catalog/entries/pengine-.*\.json$' | while read -r path; do
+              b=$(basename "$path" .json)
+              echo "${b#pengine-}"
+            done | sort -u)
+            slugs=$(printf '%s\n%s\n' "$slugs_tools" "$slugs_cat" | sort -u | grep -v '^$' || true)
           fi
 
-          # Filter to only slugs that actually have a pengine-tool.json
           valid=""
           for s in $slugs; do
-            if [ -f "tools/$s/pengine-tool.json" ]; then
+            if [[ -f "tools/${s}/pengine-tool.json" ]] && [[ -f "tools/${s}/Dockerfile" ]] && [[ -f "catalog/entries/pengine-${s}.json" ]]; then
               valid="$valid\"$s\","
             fi
           done
@@ -111,12 +121,14 @@ jobs:
 
       - uses: sigstore/cosign-installer@v3
 
-      - name: Read tool manifest
+      - name: Read tool coordinates from catalog
         id: cfg
         run: |
-          MANIFEST="tools/${{ matrix.slug }}/pengine-tool.json"
-          echo "image=ghcr.io/pengine-ai/tools/pengine-$(jq -r '.id | split("/")[1]' "$MANIFEST")" >> "$GITHUB_OUTPUT"
-          echo "version=$(jq -r '.version' "$MANIFEST")" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          CATALOG="catalog/entries/pengine-${{ matrix.slug }}.json"
+          [[ -f "$CATALOG" ]] || { echo "missing catalog: $CATALOG"; exit 1; }
+          echo "image=ghcr.io/pengine-ai/tools/pengine-$(jq -r '.id | split("/")[1]' "$CATALOG")" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r '.current' "$CATALOG")" >> "$GITHUB_OUTPUT"
 
       - name: Resolve version from tag (override)
         id: version
@@ -127,6 +139,24 @@ jobs:
             echo "version=${{ steps.cfg.outputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Upstream MCP npm from catalog (build-args)
+        id: upstream
+        run: |
+          set -euo pipefail
+          CATALOG="catalog/entries/pengine-${{ matrix.slug }}.json"
+          PKG_DEFAULT='@modelcontextprotocol/server-filesystem'
+          VER_DEFAULT='2026.1.14'
+          PKG="$PKG_DEFAULT"
+          VER="$VER_DEFAULT"
+          if [[ -f "$CATALOG" ]]; then
+            PKG=$(jq -r "(.upstream_mcp_npm // {}) | .package // \"\"" "$CATALOG")
+            VER=$(jq -r "(.upstream_mcp_npm // {}) | .version // \"\"" "$CATALOG")
+            [[ -n "$PKG" ]] || PKG="$PKG_DEFAULT"
+            [[ -n "$VER" ]] || VER="$VER_DEFAULT"
+          fi
+          echo "package=$PKG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
       - name: Build and push multi-arch image
         id: build
         uses: docker/build-push-action@v6
@@ -134,6 +164,9 @@ jobs:
           context: tools/${{ matrix.slug }}/
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            UPSTREAM_MCP_NPM_PACKAGE=${{ steps.upstream.outputs.package }}
+            UPSTREAM_MCP_NPM_VERSION=${{ steps.upstream.outputs.version }}
           tags: |
             ${{ steps.cfg.outputs.image }}:${{ steps.version.outputs.version }}
             ${{ steps.cfg.outputs.image }}:latest

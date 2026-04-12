@@ -416,6 +416,12 @@ mod tests {
         assert_eq!(fm.current, "0.1.0");
         assert!(!fm.versions.is_empty());
         assert!(fm.image.contains("ghcr.io/pengine-ai/tools/"));
+        let u = fm
+            .upstream_mcp_npm
+            .as_ref()
+            .expect("file-manager catalog pins upstream MCP npm");
+        assert!(u.package.contains("server-filesystem"));
+        assert!(!u.version.is_empty());
     }
 
     #[test]
