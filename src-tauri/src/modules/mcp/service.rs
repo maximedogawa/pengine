@@ -31,37 +31,13 @@ const MCP_CONFIG_ENV: &str = "PENGINE_MCP_CONFIG";
 /// Resolve the active `mcp.json` path.
 ///
 /// - Optional override: [`MCP_CONFIG_ENV`] → use that file.
-/// - **Release builds** (packaged native app): always `$APP_DATA/mcp.json` next to
-///   `connection.json`, so Tool Engine installs and workspace folders persist regardless of where
-///   the `.app` bundle lives (e.g. `/Applications` vs still under a source tree).
-/// - **Debug builds**: walk up from [`std::env::current_exe`] to find crate-root or
-///   `…/src-tauri/mcp.json` for local development, then fall back to app data.
+/// - Otherwise: always `$APP_DATA/mcp.json` next to `connection.json`, so Tool Engine installs
+///   and workspace folders persist regardless of cwd or where the binary lives (debug or release).
 pub fn resolve_mcp_config_path(store_path: &Path) -> (PathBuf, &'static str) {
     if let Ok(raw) = std::env::var(MCP_CONFIG_ENV) {
         let t = raw.trim();
         if !t.is_empty() {
             return (PathBuf::from(t), "env");
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    {
-        if let Ok(exe) = std::env::current_exe() {
-            let mut dir = exe.parent().map(Path::to_path_buf);
-            for _ in 0..16 {
-                let Some(ref d) = dir else {
-                    break;
-                };
-                let from_repo_root = d.join("src-tauri").join("mcp.json");
-                if from_repo_root.exists() {
-                    return (from_repo_root, "project");
-                }
-                let in_crate_root = d.join("mcp.json");
-                if d.join("Cargo.toml").exists() && in_crate_root.exists() {
-                    return (in_crate_root, "project");
-                }
-                dir = d.parent().map(Path::to_path_buf);
-            }
         }
     }
 
@@ -234,6 +210,7 @@ pub async fn rebuild_registry_into_state(
     state: &crate::shared::state::AppState,
 ) -> Result<(), String> {
     let _rebuild = state.mcp_rebuild_mutex.lock().await;
+    let catalog_result = crate::modules::tool_engine::service::load_catalog().await;
     let cfg = {
         let _cfg_guard = state.mcp_config_mutex.lock().await;
         let mut cfg = match load_or_init_config(&state.mcp_config_path) {
@@ -248,10 +225,19 @@ pub async fn rebuild_registry_into_state(
 
         let paths = filesystem_allowed_paths(&cfg);
         let mut ws_changed = false;
-        match crate::modules::tool_engine::service::sync_workspace_mounted_tools_if_installed(
-            &mut cfg, &paths,
-        ) {
-            Ok(changed) => ws_changed |= changed,
+        match &catalog_result {
+            Ok(cat) => {
+                match crate::modules::tool_engine::service::sync_workspace_mounted_tools_for_catalog(
+                    &mut cfg, &paths, cat,
+                ) {
+                    Ok(changed) => ws_changed |= changed,
+                    Err(e) => {
+                        state
+                            .emit_log("toolengine", &format!("workspace mount sync skipped: {e}"))
+                            .await;
+                    }
+                }
+            }
             Err(e) => {
                 state
                     .emit_log("toolengine", &format!("workspace mount sync skipped: {e}"))
@@ -371,10 +357,9 @@ mod tests {
         assert!(!cfg.servers.contains_key("filesystem"));
     }
 
-    /// Release binaries always use `mcp.json` next to `connection.json` (no exe walk).
-    #[cfg(not(debug_assertions))]
+    /// Default resolution: `mcp.json` next to `connection.json` (no project-tree walk).
     #[test]
-    fn resolve_mcp_config_release_uses_app_data_adjacent_to_store() {
+    fn resolve_mcp_config_uses_app_data_adjacent_to_store() {
         let store = PathBuf::from("/tmp/pengine-fake-app/connection.json");
         let (path, src) = resolve_mcp_config_path(&store);
         assert_eq!(src, "app_data");

@@ -14,7 +14,7 @@ The dashboard **Tools** column lists whatever is in `mcp.json`. Use **+ Add cust
 | Situation | Path |
 |-----------|------|
 | Packaged app (recommended mental model) | Next to `connection.json` under the app data directory (same folder as Telegram token storage). |
-| Local dev | Often `src-tauri/mcp.json` when you run from a source tree (see resolver in `mcp_service::resolve_mcp_config_path`). |
+| Local dev | Same as packaged: next to `connection.json` (see `mcp_service::resolve_mcp_config_path`). Use `PENGINE_MCP_CONFIG` if you want a repo-local file. |
 | Override | Set **`PENGINE_MCP_CONFIG`** to an absolute or relative path. |
 
 The active path is returned by **`GET http://127.0.0.1:21516/v1/mcp/config`** (`config_path` field).

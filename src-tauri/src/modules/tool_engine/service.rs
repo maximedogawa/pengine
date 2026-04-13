@@ -345,11 +345,14 @@ pub fn installed_tool_ids(mcp_config_path: &Path) -> Vec<String> {
 
 /// Rewrite every **installed** catalog tool that uses `mount_workspace` so argv matches `host_paths`
 /// (empty list → in-image stub root only). Returns whether `mcp.json` should be saved.
-pub fn sync_workspace_mounted_tools_if_installed(
+///
+/// Pass the catalog from [`load_catalog`] (or tests) so callers can fetch **before** holding
+/// `mcp_config_mutex`, avoiding network I/O under that lock.
+pub fn sync_workspace_mounted_tools_for_catalog(
     cfg: &mut McpConfig,
     host_paths: &[String],
+    catalog: &ToolCatalog,
 ) -> Result<bool, String> {
-    let catalog = load_embedded_catalog()?;
     let mut changed = false;
     for entry in &catalog.tools {
         let key = server_key(&entry.id);
@@ -444,12 +447,14 @@ pub async fn uninstall_tool(
     }
 
     // Remove the container image — prefer the ref from the installed entry.
-    let image_ref = installed_image_ref.or_else(|| {
-        load_embedded_catalog()
+    let image_ref = match installed_image_ref {
+        Some(r) => Some(r),
+        None => load_catalog()
+            .await
             .ok()
             .and_then(|cat| cat.tools.iter().find(|t| t.id == tool_id).cloned())
-            .and_then(|entry| image_reference(&entry).ok())
-    });
+            .and_then(|entry| image_reference(&entry).ok()),
+    };
     if let Some(ref img) = image_ref {
         let _ = tokio::process::Command::new(&runtime.binary)
             .args(["rmi", img])
