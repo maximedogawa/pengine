@@ -359,6 +359,8 @@ async fn handle_mcp_filesystem_put(
         .filter(|p| !p.is_empty())
         .collect();
 
+    let catalog_result = te_service::load_catalog().await;
+
     let sync_note = {
         let _guard = state.mcp_config_mutex.lock().await;
 
@@ -377,8 +379,15 @@ async fn handle_mcp_filesystem_put(
         mcp_service::set_filesystem_allowed_paths(&mut cfg, &paths);
 
         let mut note = None::<String>;
-        if let Err(e) = te_service::sync_workspace_mounted_tools_if_installed(&mut cfg, &paths) {
-            note = Some(e);
+        match &catalog_result {
+            Ok(cat) => {
+                if let Err(e) =
+                    te_service::sync_workspace_mounted_tools_for_catalog(&mut cfg, &paths, cat)
+                {
+                    note = Some(e);
+                }
+            }
+            Err(e) => note = Some(e.clone()),
         }
 
         mcp_service::save_config(&state.mcp_config_path, &cfg).map_err(|e| {
