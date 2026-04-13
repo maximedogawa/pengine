@@ -1,7 +1,7 @@
 use super::runtime::RuntimeInfo;
 use super::types::{ToolCatalog, ToolEntry, VersionEntry};
 use crate::modules::mcp::service as mcp_service;
-use crate::modules::mcp::types::{McpConfig, ServerEntry};
+use crate::modules::mcp::types::{CustomToolEntry, McpConfig, ServerEntry};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
@@ -17,8 +17,11 @@ const REMOTE_CATALOG_URL: &str =
 /// How long to wait for the remote catalog before falling back to embedded.
 const REMOTE_CATALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Server key prefix for tool-engine entries in `mcp.json`.
+/// Server key prefix for catalog tool-engine entries in `mcp.json`.
 const TE_PREFIX: &str = "te_";
+
+/// Server key prefix for custom (developer-added) tool entries.
+const TE_CUSTOM_PREFIX: &str = "te_custom_";
 
 /// Sole MCP root when no shared folders are set yet (standard path in Linux images; no extra image dirs).
 pub const EMPTY_WORKSPACE_CONTAINER_ROOT: &str = "/tmp";
@@ -455,6 +458,172 @@ pub async fn uninstall_tool(
     }
 
     Ok(())
+}
+
+// ── Custom tools (developer-added Docker images, local only) ──────────
+
+/// Server key for a custom tool entry in `mcp.json`.
+fn custom_server_key(key: &str) -> String {
+    format!("{TE_CUSTOM_PREFIX}{key}")
+}
+
+/// Build `podman|docker run …` argv for a custom tool entry.
+fn podman_run_argv_for_custom(entry: &CustomToolEntry, host_paths: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        "-i".into(),
+        "--network=none".into(),
+    ];
+
+    let bind_pairs = if entry.mount_workspace {
+        workspace_app_bind_pairs(host_paths)
+    } else {
+        Vec::new()
+    };
+
+    if entry.mount_workspace && !bind_pairs.is_empty() {
+        let suffix = if entry.mount_read_only { "ro" } else { "rw" };
+        args.extend(
+            bind_pairs
+                .iter()
+                .map(|(host, cpath)| format!("-v={host}:{cpath}:{suffix}")),
+        );
+    }
+
+    args.push(entry.image.clone());
+    args.extend(entry.mcp_server_cmd.iter().cloned());
+
+    if entry.append_workspace_roots {
+        if bind_pairs.is_empty() {
+            args.push(EMPTY_WORKSPACE_CONTAINER_ROOT.to_string());
+        } else {
+            args.extend(bind_pairs.into_iter().map(|(_, cpath)| cpath));
+        }
+    }
+
+    args
+}
+
+/// List custom tools from `mcp.json`.
+pub fn list_custom_tools(mcp_config_path: &Path) -> Vec<CustomToolEntry> {
+    mcp_config_path
+        .exists()
+        .then(|| mcp_service::read_config(mcp_config_path).ok())
+        .flatten()
+        .map(|cfg| cfg.custom_tools)
+        .unwrap_or_default()
+}
+
+/// Add a custom Docker image as an MCP tool. Pulls the image, registers it in `mcp.json`,
+/// and stores the entry in `custom_tools` so the dashboard can list it.
+pub async fn add_custom_tool(
+    entry: CustomToolEntry,
+    runtime: &RuntimeInfo,
+    mcp_config_path: &Path,
+    mcp_cfg_lock: &tokio::sync::Mutex<()>,
+    log: &LogFn,
+) -> Result<(), String> {
+    let tag = format!("[custom/{}]", entry.key);
+
+    // Pull the image (no digest pinning for custom tools — developer controls the tag).
+    log(&format!("{tag} pulling {}…", entry.image));
+    let mut cmd = tokio::process::Command::new(&runtime.binary);
+    cmd.args(["pull", &entry.image]);
+    match run_streaming_tagged(cmd, log, &tag).await {
+        Ok(()) => log(&format!("{tag} image pulled")),
+        Err(e) => {
+            // Check if the image is already present locally (e.g. local build).
+            if image_present(runtime, &entry.image).await {
+                log(&format!("{tag} pull failed but image found locally"));
+            } else {
+                return Err(format!("failed to pull `{}` — {e}", entry.image));
+            }
+        }
+    }
+
+    let _cfg_guard = mcp_cfg_lock.lock().await;
+    let mut cfg = mcp_service::load_or_init_config(mcp_config_path)?;
+    let host_paths = mcp_service::filesystem_allowed_paths(&cfg);
+
+    // Prevent duplicate keys.
+    if cfg.custom_tools.iter().any(|t| t.key == entry.key) {
+        return Err(format!("custom tool '{}' already exists", entry.key));
+    }
+
+    let args = podman_run_argv_for_custom(&entry, &host_paths);
+    let server_entry = ServerEntry::Stdio {
+        command: runtime.binary.clone(),
+        args,
+        env: HashMap::new(),
+        direct_return: entry.direct_return,
+    };
+
+    cfg.servers
+        .insert(custom_server_key(&entry.key), server_entry);
+    cfg.custom_tools.push(entry);
+    mcp_service::save_config(mcp_config_path, &cfg)
+}
+
+/// Remove a custom tool from `mcp.json` and optionally remove the image.
+pub async fn remove_custom_tool(
+    key: &str,
+    runtime: &RuntimeInfo,
+    mcp_config_path: &Path,
+    mcp_cfg_lock: &tokio::sync::Mutex<()>,
+) -> Result<(), String> {
+    let _cfg_guard = mcp_cfg_lock.lock().await;
+    let mut cfg = mcp_service::load_or_init_config(mcp_config_path)?;
+
+    let idx = cfg
+        .custom_tools
+        .iter()
+        .position(|t| t.key == key)
+        .ok_or_else(|| format!("custom tool '{key}' not found"))?;
+
+    let removed = cfg.custom_tools.remove(idx);
+    cfg.servers.remove(&custom_server_key(key));
+    mcp_service::save_config(mcp_config_path, &cfg)?;
+
+    // Best-effort image removal.
+    let _ = tokio::process::Command::new(&runtime.binary)
+        .args(["rmi", &removed.image])
+        .output()
+        .await;
+
+    Ok(())
+}
+
+/// Rewrite custom tool server entries when workspace paths change (same as catalog tools).
+pub fn sync_custom_tools_if_installed(cfg: &mut McpConfig, host_paths: &[String]) -> bool {
+    let mut changed = false;
+    for entry in &cfg.custom_tools {
+        let key = custom_server_key(&entry.key);
+        let Some(ServerEntry::Stdio {
+            command,
+            args,
+            env,
+            direct_return,
+        }) = cfg.servers.get(&key)
+        else {
+            continue;
+        };
+
+        let new_args = podman_run_argv_for_custom(entry, host_paths);
+        if args == &new_args {
+            continue;
+        }
+
+        let new_entry = ServerEntry::Stdio {
+            command: command.clone(),
+            args: new_args,
+            env: env.clone(),
+            direct_return: *direct_return,
+        };
+        cfg.servers.insert(key, new_entry);
+        changed = true;
+    }
+    changed
 }
 
 #[cfg(test)]

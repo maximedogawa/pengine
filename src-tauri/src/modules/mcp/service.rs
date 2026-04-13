@@ -247,24 +247,27 @@ pub async fn rebuild_registry_into_state(
         };
 
         let paths = filesystem_allowed_paths(&cfg);
+        let mut ws_changed = false;
         match crate::modules::tool_engine::service::sync_workspace_mounted_tools_if_installed(
             &mut cfg, &paths,
         ) {
-            Ok(changed) => {
-                if changed {
-                    if let Err(e) = save_config(&state.mcp_config_path, &cfg) {
-                        state
-                            .emit_log(
-                                "mcp",
-                                &format!("mcp.json not saved after workspace sync: {e}"),
-                            )
-                            .await;
-                    }
-                }
-            }
+            Ok(changed) => ws_changed |= changed,
             Err(e) => {
                 state
                     .emit_log("toolengine", &format!("workspace mount sync skipped: {e}"))
+                    .await;
+            }
+        }
+        ws_changed |=
+            crate::modules::tool_engine::service::sync_custom_tools_if_installed(&mut cfg, &paths);
+
+        if ws_changed {
+            if let Err(e) = save_config(&state.mcp_config_path, &cfg) {
+                state
+                    .emit_log(
+                        "mcp",
+                        &format!("mcp.json not saved after workspace sync: {e}"),
+                    )
                     .await;
             }
         }
