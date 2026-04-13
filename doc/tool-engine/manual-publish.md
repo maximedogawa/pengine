@@ -103,6 +103,8 @@ This checks the npm registry for newer versions, bumps `mcp-tools.json`, and pri
 
 Or just push changes to `tools/` on `main` — CI builds automatically for tools whose version changed.
 
+CI builds **linux/amd64** on `ubuntu-latest` and **linux/arm64** on **`ubuntu-24.04-arm`** (native), then merges a multi-arch manifest with `docker buildx imagetools create`. Building arm64 on an Intel runner uses QEMU; **Node/npm during `docker build` often exits with Illegal instruction** under emulation, so arm64 is not built that way.
+
 ---
 
 ## Troubleshooting: 0 commands
