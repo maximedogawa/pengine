@@ -46,7 +46,7 @@ IMAGE=$(jq -r --arg s "$SLUG" '.tools[] | select(.id | endswith("/" + $s)) | .im
 MANIFEST="${IMAGE}:${VERSION}"
 ```
 
-If the tag was already used locally for a single-arch image, free it first. `podman untag` only removes **local** tags — it does not affect remote images on GHCR. For remote cleanup, use the GitHub Packages web UI or `gh api`:
+If the tag was already used locally for a single-arch image, free it first. `podman untag` only removes **local** name references in your Podman store; it does **not** delete or retag manifests on remote registries such as GHCR (remote tags and digests are unchanged). To change or remove tags in GHCR, use the GitHub Packages UI, `gh api`, or another registry-specific tool.
 
 ```bash
 podman untag "${IMAGE}:${VERSION}" 2>/dev/null || true

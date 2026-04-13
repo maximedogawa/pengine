@@ -8,6 +8,8 @@ name: Publish tool images
 # Triggers:
 #   - Push to main touching tools/** → build only changed tools
 #   - Manual dispatch → pick one slug or "all"
+#
+# Shell logic lives in .github/scripts/tools-publish/*.sh
 
 on:
   workflow_dispatch:
@@ -38,63 +40,9 @@ jobs:
 
       - name: Find tools to publish
         id: detect
-        run: |
-          set -euo pipefail
-          REGISTRY="tools/mcp-tools.json"
-
-          # All valid slugs: tools in mcp-tools.json that have a Dockerfile.
-          all=""
-          for slug in $(jq -r '.tools[].id | split("/")[1]' "$REGISTRY"); do
-            [ -f "tools/${slug}/Dockerfile" ] && all="$all $slug"
-          done
-
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            input="${{ github.event.inputs.tool }}"
-            if [[ "$input" == "all" || -z "$input" ]]; then
-              slugs="$all"
-            else
-              slugs="$input"
-            fi
-          else
-            # Push to main: check two things:
-            #   1. Dockerfile changed in tools/<slug>/
-            #   2. Tool version bumped in mcp-tools.json
-            changed=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
-            slugs=""
-
-            for s in $all; do
-              # Dockerfile or other build files changed
-              if echo "$changed" | grep -q "^tools/${s}/"; then
-                slugs="$slugs $s"
-                continue
-              fi
-
-              # Version bumped in mcp-tools.json
-              if echo "$changed" | grep -q "^tools/mcp-tools.json$"; then
-                old_ver=$(git show HEAD~1:tools/mcp-tools.json 2>/dev/null \
-                  | jq -r --arg s "$s" '.tools[] | select(.id | endswith("/" + $s)) | .current // ""' 2>/dev/null || echo "")
-                new_ver=$(jq -r --arg s "$s" '.tools[] | select(.id | endswith("/" + $s)) | .current' "$REGISTRY")
-                if [[ -n "$old_ver" && "$old_ver" != "$new_ver" ]]; then
-                  slugs="$slugs $s"
-                fi
-              fi
-            done
-          fi
-
-          # Build JSON matrix.
-          json="["
-          for s in $slugs; do
-            [ -f "tools/${s}/Dockerfile" ] && json="$json\"$s\","
-          done
-          json="${json%,}]"
-
-          if [[ "$json" == "[]" ]]; then
-            echo "skip=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "matrix=$json" >> "$GITHUB_OUTPUT"
-          echo "Tools: $json"
+        env:
+          INPUT_TOOL: ${{ github.event.inputs.tool }}
+        run: bash .github/scripts/tools-publish/detect-matrix.sh
 
   publish:
     needs: detect
@@ -116,20 +64,17 @@ jobs:
 
       - name: Read manifest
         id: cfg
-        run: |
-          set -euo pipefail
-          REGISTRY="tools/mcp-tools.json"
-          SUFFIX="${{ matrix.slug }}"
-          IMAGE=$(jq -r --arg s "$SUFFIX" '.tools[] | select(.id | endswith("/" + $s)) | .image' "$REGISTRY")
-          VERSION=$(jq -r --arg s "$SUFFIX" '.tools[] | select(.id | endswith("/" + $s)) | .current' "$REGISTRY")
-          echo "image=$IMAGE"     >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          TOOL_SLUG: ${{ matrix.slug }}
+        run: bash .github/scripts/tools-publish/read-tool-manifest.sh
 
-          # Optional: upstream npm package for docker build-args.
-          PKG=$(jq -r --arg s "$SUFFIX" '.tools[] | select(.id | endswith("/" + $s)) | (.upstream_mcp_npm // {}).package // ""' "$REGISTRY")
-          VER=$(jq -r --arg s "$SUFFIX" '.tools[] | select(.id | endswith("/" + $s)) | (.upstream_mcp_npm // {}).version // ""' "$REGISTRY")
-          echo "npm_pkg=$PKG" >> "$GITHUB_OUTPUT"
-          echo "npm_ver=$VER" >> "$GITHUB_OUTPUT"
+      - name: Compute image tags
+        id: img_tags
+        env:
+          IMAGE: ${{ steps.cfg.outputs.image }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: bash .github/scripts/tools-publish/compute-image-tags.sh
 
       - name: Build and push
         id: build
@@ -141,34 +86,20 @@ jobs:
           build-args: |
             UPSTREAM_MCP_NPM_PACKAGE=${{ steps.cfg.outputs.npm_pkg }}
             UPSTREAM_MCP_NPM_VERSION=${{ steps.cfg.outputs.npm_ver }}
-          tags: |
-            ${{ steps.cfg.outputs.image }}:${{ steps.cfg.outputs.version }}
-            ${{ steps.cfg.outputs.image }}:latest
+          tags: ${{ steps.img_tags.outputs.tags }}
 
       - name: Sign image
         run: cosign sign --yes "${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}"
 
       - name: Smoke test (MCP init handshake)
-        run: |
-          set -euo pipefail
-          IMAGE="${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}"
-          docker pull "$IMAGE"
-          RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.1"}}}' \
-            | timeout 15 docker run --rm -i --network=none "$IMAGE" /tmp \
-            | head -1)
-          echo "$RESP" | jq -e '.result.serverInfo' > /dev/null \
-            || { echo "::error::MCP init failed: $RESP"; exit 1; }
+        env:
+          IMAGE_WITH_DIGEST: ${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: bash .github/scripts/tools-publish/smoke-test-mcp.sh
 
       - name: Summary
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ### ${{ matrix.slug }} v${{ steps.cfg.outputs.version }}
-          - **Image:** \`${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}\`
-          - **Platforms:** linux/amd64, linux/arm64
-          - **Signed:** cosign keyless
-
-          Digest for mcp-tools.json:
-          \`\`\`
-          ${{ steps.build.outputs.digest }}
-          \`\`\`
-          EOF
+        env:
+          TOOL_SLUG: ${{ matrix.slug }}
+          TOOL_VERSION: ${{ steps.cfg.outputs.version }}
+          IMAGE_REF: ${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: bash .github/scripts/tools-publish/write-publish-summary.sh
