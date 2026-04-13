@@ -4,9 +4,9 @@ Tool container images for Pengine live on **GitHub Container Registry (GHCR)**. 
 
 ## Where the images are
 
-| Piece | Value |
-|--------|--------|
-| Registry host | `ghcr.io` |
+| Piece           | Value                               |
+| --------------- | ----------------------------------- |
+| Registry host   | `ghcr.io`                           |
 | Repository path | `pengine-ai/tools/pengine-<suffix>` |
 
 The `<suffix>` comes from the tool `id` in `tools/mcp-tools.json`. Example: id `pengine/file-manager` → image `ghcr.io/pengine-ai/tools/pengine-file-manager`.
