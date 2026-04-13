@@ -4,18 +4,18 @@ Tool container images for Pengine live on **GitHub Container Registry (GHCR)**. 
 
 ## Where the images are
 
-| Piece | Value |
-|--------|--------|
-| Registry host | `ghcr.io` |
-| Repository path | `pengine-ai/tools/pengine-<suffix>` |
+| Piece           | Value                               |
+| --------------- | ----------------------------------- |
+| Registry host   | `ghcr.io`                           |
+| Repository path | `pengine-ai/pengine-<suffix>` |
 
-The `<suffix>` comes from the tool `id` in `tools/mcp-tools.json`. Example: id `pengine/file-manager` → image `ghcr.io/pengine-ai/tools/pengine-file-manager`.
+The `<suffix>` comes from the tool `id` in `tools/mcp-tools.json`. Example: id `pengine/file-manager` → image `ghcr.io/pengine-ai/pengine-file-manager`.
 
 Pull examples:
 
 ```bash
-podman pull ghcr.io/pengine-ai/tools/pengine-file-manager:0.1.0
-podman pull ghcr.io/pengine-ai/tools/pengine-file-manager:latest
+podman pull ghcr.io/pengine-ai/pengine-file-manager:0.1.0
+podman pull ghcr.io/pengine-ai/pengine-file-manager:latest
 ```
 
 Browse packages on GitHub: **https://github.com/orgs/pengine-ai/packages**
@@ -102,6 +102,8 @@ This checks the npm registry for newer versions, bumps `mcp-tools.json`, and pri
 2. **Run workflow**; set **tool** to the slug (e.g. `file-manager`) or `all`.
 
 Or just push changes to `tools/` on `main` — CI builds automatically for tools whose version changed.
+
+CI runs **one job per tool** on **`ubuntu-24.04-arm`**: two `docker/build-push-action` steps (native **linux/arm64**, then **linux/amd64** via QEMU), then **`docker buildx imagetools create`** so **one** multi-arch tag (`:version` / optional `:latest`) and **one digest** appear in the job summary. Staging tags `:version-ci-amd64-<run>` / `:version-ci-arm64-<run>` may still show in the GitHub Packages UI until you delete them; use `:version` or the digest from the summary for production.
 
 ---
 
