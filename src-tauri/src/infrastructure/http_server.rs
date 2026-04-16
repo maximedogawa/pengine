@@ -497,6 +497,34 @@ fn is_valid_server_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// True when two stdio entries launch the same process/bind mounts; differs only in fields we can
+/// patch without spawning a new stdio child (e.g. `direct_return`).
+fn mcp_stdio_identity_ignores_direct_return(
+    old: &crate::modules::mcp::types::ServerEntry,
+    new: &crate::modules::mcp::types::ServerEntry,
+) -> bool {
+    use crate::modules::mcp::types::ServerEntry;
+    match (old, new) {
+        (
+            ServerEntry::Stdio {
+                command: c0,
+                args: a0,
+                env: e0,
+                private_host_path: p0,
+                ..
+            },
+            ServerEntry::Stdio {
+                command: c1,
+                args: a1,
+                env: e1,
+                private_host_path: p1,
+                ..
+            },
+        ) => c0 == c1 && a0 == a1 && e0 == e1 && p0 == p1,
+        _ => false,
+    }
+}
+
 async fn handle_mcp_server_upsert(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -523,7 +551,7 @@ async fn handle_mcp_server_upsert(
         }
     }
 
-    {
+    let old_entry = {
         let _guard = state.mcp_config_mutex.lock().await;
         let mut cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
             (
@@ -532,7 +560,12 @@ async fn handle_mcp_server_upsert(
             )
         })?;
 
-        cfg.servers.insert(name.clone(), entry);
+        let old = cfg.servers.get(&name).cloned();
+        if old.as_ref() == Some(&entry) {
+            return Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))));
+        }
+
+        cfg.servers.insert(name.clone(), entry.clone());
 
         mcp_service::save_config(&state.mcp_config_path, &cfg).map_err(|e| {
             (
@@ -540,14 +573,51 @@ async fn handle_mcp_server_upsert(
                 Json(ErrorResponse { error: e }),
             )
         })?;
-    }
+
+        old
+    };
+
+    let try_direct_patch = match (&old_entry, &entry) {
+        (Some(old_e), new_e) if mcp_stdio_identity_ignores_direct_return(old_e, new_e) => {
+            matches!(
+                (old_e, new_e),
+                (
+                    crate::modules::mcp::types::ServerEntry::Stdio {
+                        direct_return: a,
+                        ..
+                    },
+                    crate::modules::mcp::types::ServerEntry::Stdio {
+                        direct_return: b,
+                        ..
+                    },
+                ) if a != b
+            )
+        }
+        _ => false,
+    };
+
+    let patch_direct_return = match &entry {
+        crate::modules::mcp::types::ServerEntry::Stdio { direct_return, .. } => *direct_return,
+        _ => false,
+    };
 
     state
         .emit_log("mcp", &format!("server '{name}' saved"))
         .await;
 
     let bg = state.clone();
+    let name_bg = name.clone();
     tokio::spawn(async move {
+        if try_direct_patch
+            && mcp_service::patch_stdio_direct_return_in_registry(
+                &bg,
+                &name_bg,
+                patch_direct_return,
+            )
+            .await
+        {
+            return;
+        }
         if let Err(e) = mcp_service::rebuild_registry_into_state(&bg).await {
             bg.emit_log(
                 "mcp",

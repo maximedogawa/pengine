@@ -131,7 +131,7 @@ impl MemoryProvider {
     /// `None` if no connected MCP server exposes a known memory tool shape.
     pub fn detect(reg: &ToolRegistry) -> Option<Self> {
         for p in reg.providers() {
-            let tools: HashSet<&str> = p.tools().iter().map(|t| t.name.as_str()).collect();
+            let tools: HashSet<String> = p.tools().into_iter().map(|t| t.name).collect();
             if tools.contains("create_entities") && tools.contains("add_observations") {
                 return Some(Self {
                     backend: Backend::KnowledgeGraph,

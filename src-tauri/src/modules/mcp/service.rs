@@ -169,7 +169,7 @@ pub async fn connect_one_server(
         .await
         {
             Ok(client) => {
-                let n = client.tools.len();
+                let n = client.tools().len();
                 let cmd_word = if n == 1 { "command" } else { "commands" };
                 let dr = if *direct_return { " direct_return" } else { "" };
                 let msg = format!("{server_key} stdio ({n} {cmd_word}{dr})");
@@ -196,6 +196,42 @@ pub async fn build_mcp_providers(cfg: &McpConfig) -> (Vec<Provider>, Vec<String>
     }
 
     (providers, status)
+}
+
+/// Flip `direct_return` on every tool for one connected stdio server — no new MCP handshake and no
+/// reconnect for other servers. Used when `mcp.json` changes only that flag.
+///
+/// Returns `true` if a matching stdio provider was found and updated.
+pub async fn patch_stdio_direct_return_in_registry(
+    state: &crate::shared::state::AppState,
+    server_key: &str,
+    direct_return: bool,
+) -> bool {
+    let _rebuild = state.mcp_rebuild_mutex.lock().await;
+    let mut patched = false;
+    {
+        let reg = state.mcp.read().await;
+        for p in reg.providers() {
+            if !p.server_name().eq_ignore_ascii_case(server_key) {
+                continue;
+            }
+            if let Provider::Mcp(client) = p {
+                client.set_all_direct_return(direct_return);
+                patched = true;
+                break;
+            }
+        }
+    }
+    if patched {
+        state
+            .emit_log(
+                "mcp",
+                &format!("server '{server_key}' direct_return updated (no full reconnect)"),
+            )
+            .await;
+        emit_registry_changed_event(state).await;
+    }
+    patched
 }
 
 /// Reload `mcp.json` from disk and replace the in-memory tool registry.

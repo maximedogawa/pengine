@@ -87,8 +87,11 @@ pub fn tool_manager_named(server_key: &str, state: AppState) -> NativeProvider {
                 "Manage container-based tools from the catalog. All catalog tools (e.g. File Manager) \
                  are user-managed and can be freely installed or uninstalled on request. \
                  Use action 'list' to see all available catalog tools and their install status. \
-                 Use action 'install' with a tool_id to install a tool. \
-                 Use action 'uninstall' with a tool_id to remove an installed tool. \
+                 Use action 'install' with a tool_id to install one tool. \
+                 Use action 'install_all' (no tool_id) to install every catalog tool not yet installed — \
+                 prefer this when the user asks to install all tools. Never use 'uninstall_all' for that. \
+                 Use action 'uninstall' with a tool_id to remove one installed tool. \
+                 Use action 'uninstall_all' (no tool_id) only when the user asks to remove every catalog tool. \
                  Always call this tool when the user asks to install, uninstall, or list tools."
                     .to_string(),
             ),
@@ -98,12 +101,12 @@ pub fn tool_manager_named(server_key: &str, state: AppState) -> NativeProvider {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "install", "uninstall"],
-                        "description": "The operation: 'list' to show available tools, 'install' or 'uninstall' to change a tool"
+                        "enum": ["list", "install", "install_all", "uninstall", "uninstall_all"],
+                        "description": "The operation: 'list'; 'install' / 'uninstall' for one tool; 'install_all' / 'uninstall_all' for every catalog tool at once"
                     },
                     "tool_id": {
                         "type": "string",
-                        "description": "Required for install/uninstall. Use the exact id from the 'list' output (e.g. 'pengine/file-manager'). Call with action 'list' first if unsure."
+                        "description": "Required for install and uninstall only. Omit for list, install_all, and uninstall_all. Use the exact id from the 'list' output (e.g. 'pengine/file-manager')."
                     }
                 }
             }),
@@ -132,6 +135,7 @@ async fn handle_tool_manager(
                 .ok_or("missing 'tool_id' for install")?;
             handle_install_tool(tool_id, state).await
         }
+        "install_all" => handle_install_all_tools(state).await,
         "uninstall" => {
             let tool_id = args
                 .get("tool_id")
@@ -139,6 +143,7 @@ async fn handle_tool_manager(
                 .ok_or("missing 'tool_id' for uninstall")?;
             handle_uninstall_tool(tool_id, state).await
         }
+        "uninstall_all" => handle_uninstall_all_tools(state).await,
         _ => Err(format!("unknown action: {action}")),
     }
 }
@@ -178,9 +183,89 @@ async fn handle_install_tool(tool_id: &str, state: &AppState) -> Result<String, 
     ))
 }
 
+async fn handle_install_all_tools(state: &AppState) -> Result<String, String> {
+    let runtime = tool_engine_runtime::detect_runtime().await.ok_or(
+        "No container runtime (Docker/Podman) found. Please install Docker or Podman first.",
+    )?;
+
+    let summary = {
+        let _te_guard = state.tool_engine_mutex.lock().await;
+        state
+            .emit_log(
+                "toolengine",
+                "installing all missing catalog tools via chat…",
+            )
+            .await;
+        let log_state = state.clone();
+        let log_fn: tool_engine_service::LogFn = Box::new(move |msg: &str| {
+            let s = log_state.clone();
+            let m = msg.to_string();
+            tokio::spawn(async move { s.emit_log("toolengine", &m).await });
+        });
+        let out = tool_engine_service::install_all_catalog_tools(
+            &runtime,
+            &state.mcp_config_path,
+            &state.mcp_config_mutex,
+            &log_fn,
+        )
+        .await;
+        state
+            .emit_log("toolengine", "catalog install-all finished via chat")
+            .await;
+        out
+    }?;
+
+    if let Err(e) = mcp_service::rebuild_registry_into_state(state).await {
+        state
+            .emit_log(
+                "mcp",
+                &format!("registry rebuild after install_all failed: {e}"),
+            )
+            .await;
+        return Err(e);
+    }
+
+    Ok(summary)
+}
+
 async fn handle_uninstall_tool(tool_id: &str, state: &AppState) -> Result<String, String> {
     run_tool_mutation(tool_id, state, "uninstall", ToolAction::Uninstall).await?;
     Ok(format!("Tool '{tool_id}' uninstalled successfully."))
+}
+
+async fn handle_uninstall_all_tools(state: &AppState) -> Result<String, String> {
+    let runtime = tool_engine_runtime::detect_runtime().await.ok_or(
+        "No container runtime (Docker/Podman) found. Please install Docker or Podman first.",
+    )?;
+
+    let summary = {
+        let _te_guard = state.tool_engine_mutex.lock().await;
+        state
+            .emit_log("toolengine", "uninstalling all catalog tools via chat…")
+            .await;
+        let out = tool_engine_service::uninstall_all_catalog_tools(
+            &runtime,
+            &state.mcp_config_path,
+            &state.mcp_config_mutex,
+        )
+        .await;
+        state
+            .emit_log("toolengine", "catalog uninstall-all finished via chat")
+            .await;
+        out
+    }?;
+
+    if let Err(e) = mcp_service::rebuild_registry_into_state(state).await {
+        state
+            .emit_log(
+                "mcp",
+                &format!("registry rebuild after uninstall_all failed: {e}"),
+            )
+            .await;
+        return Err(e);
+    }
+
+    Ok(summary)
 }
 
 enum ToolAction {

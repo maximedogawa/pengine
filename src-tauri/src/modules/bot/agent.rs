@@ -635,10 +635,10 @@ async fn run_model_turn(state: &AppState, user_message: &str) -> Result<TurnResu
             let t_tool = Instant::now();
             let resolved = {
                 let reg = state.mcp.read().await;
-                reg.resolve_tool(&name)
+                reg.prepare_tool_invocation(&name, args)
             };
             let (result_text, is_direct) = match resolved {
-                Ok((provider, tool_name, direct)) => {
+                Ok((provider, tool_name, direct, args)) => {
                     match provider.call_tool(&tool_name, args).await {
                         Ok(text) => {
                             state

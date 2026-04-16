@@ -17,7 +17,7 @@ pub struct McpConfig {
 }
 
 /// One logical MCP server. Same top-level shape for every backend: `type` picks the loader.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEntry {
     /// In-process tool pack; `id` selects a built-in (e.g. `dice`).

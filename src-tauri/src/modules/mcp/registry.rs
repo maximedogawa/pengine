@@ -111,10 +111,10 @@ impl Provider {
         }
     }
 
-    pub fn tools(&self) -> &[ToolDef] {
+    pub fn tools(&self) -> Vec<ToolDef> {
         match self {
-            Provider::Native(n) => &n.tools,
-            Provider::Mcp(c) => &c.tools,
+            Provider::Native(n) => n.tools.clone(),
+            Provider::Mcp(c) => c.tools(),
         }
     }
 
@@ -147,7 +147,7 @@ impl ToolRegistry {
         let cached_ollama_tools = build_ollama_tools(&providers);
         let cached_tool_names = providers
             .iter()
-            .flat_map(|p| p.tools().iter())
+            .flat_map(|p| p.tools())
             .filter(|t| !is_deprecated_mcp_tool(t))
             .map(|t| t.name.clone())
             .collect();
@@ -161,9 +161,8 @@ impl ToolRegistry {
     pub fn all_tools(&self) -> Vec<ToolDef> {
         self.providers
             .iter()
-            .flat_map(|p| p.tools().iter())
+            .flat_map(|p| p.tools())
             .filter(|t| !is_deprecated_mcp_tool(t))
-            .cloned()
             .collect()
     }
 
@@ -187,14 +186,30 @@ impl ToolRegistry {
         &self.providers
     }
 
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<(String, bool), String> {
-        let (provider, tool, direct) = self.resolve_tool(name)?;
-        let args = match &provider {
-            Provider::Mcp(c) if c.server_name == "te_pengine-file-manager" => {
+    fn normalize_tool_args_for_provider(provider: &Provider, args: Value) -> Value {
+        match provider {
+            Provider::Mcp(c) if is_pengine_file_manager_server_key(c.server_name.as_str()) => {
                 normalize_file_manager_tool_args(args)
             }
             _ => args,
-        };
+        }
+    }
+
+    /// Resolve a tool and rewrite arguments (e.g. File Manager `/mcp/...` → `/app/...`).
+    /// Call [`Provider::call_tool`] with the returned name and args **after** releasing any lock on this registry.
+    pub fn prepare_tool_invocation(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<(Provider, String, bool, Value), String> {
+        let (provider, tool, direct) = self.resolve_tool(name)?;
+        let args = Self::normalize_tool_args_for_provider(&provider, args);
+        Ok((provider, tool, direct, args))
+    }
+
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<(String, bool), String> {
+        let (provider, tool, direct) = self.resolve_tool(name)?;
+        let args = Self::normalize_tool_args_for_provider(&provider, args);
         let text = provider.call_tool(&tool, args).await?;
         Ok((text, direct))
     }
@@ -206,17 +221,17 @@ impl ToolRegistry {
         };
 
         if server.is_none() {
-            let mut found: Vec<(&Provider, &ToolDef)> = Vec::new();
+            let mut found: Vec<(Provider, ToolDef)> = Vec::new();
             for provider in &self.providers {
-                if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
-                    found.push((provider, def));
+                if let Some(def) = provider.tools().into_iter().find(|t| t.name == tool) {
+                    found.push((provider.clone(), def));
                 }
             }
             return match found.len() {
                 0 => Err(format!("tool not found: {name}")),
                 1 => {
-                    let (p, d) = found[0];
-                    Ok((p.clone(), tool.to_string(), d.direct_return))
+                    let (p, d) = found.into_iter().next().expect("len 1");
+                    Ok((p, tool.to_string(), d.direct_return))
                 }
                 _ => {
                     let servers: Vec<_> = found.iter().map(|(p, _)| p.server_name()).collect();
@@ -234,13 +249,18 @@ impl ToolRegistry {
                 if !provider.server_name().eq_ignore_ascii_case(key) {
                     continue;
                 }
-                if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
+                if let Some(def) = provider.tools().into_iter().find(|t| t.name == tool) {
                     return Ok((provider.clone(), tool.to_string(), def.direct_return));
                 }
             }
         }
         Err(format!("tool not found: {name}"))
     }
+}
+
+/// `mcp.json` key for the catalog tool `pengine/file-manager` (same formula as `tool_engine::server_key`).
+fn is_pengine_file_manager_server_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("te_pengine-file-manager")
 }
 
 /// Hide tools the server marks as deprecated (e.g. filesystem `read_file` → use `read_text_file`).
@@ -255,7 +275,7 @@ fn is_deprecated_mcp_tool(tool: &ToolDef) -> bool {
 fn build_ollama_tools(providers: &[Provider]) -> Value {
     let arr: Vec<Value> = providers
         .iter()
-        .flat_map(|p| p.tools().iter())
+        .flat_map(|p| p.tools())
         .filter(|t| !is_deprecated_mcp_tool(t))
         .map(|t| {
             json!({

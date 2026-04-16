@@ -2,6 +2,7 @@ use super::transport::StdioTransport;
 use super::types::ToolDef;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::RwLock;
 use std::time::Duration;
 
 /// `podman run` + `npx -y` inside the container can exceed a minute on cold cache / slow networks.
@@ -10,7 +11,7 @@ const MCP_CONNECT_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct McpClient {
     pub server_name: String,
     transport: StdioTransport,
-    pub tools: Vec<ToolDef>,
+    tool_defs: RwLock<Vec<ToolDef>>,
 }
 
 impl McpClient {
@@ -47,8 +48,24 @@ impl McpClient {
         Ok(Self {
             server_name,
             transport,
-            tools,
+            tool_defs: RwLock::new(tools),
         })
+    }
+
+    /// Snapshot of tool definitions (names, schemas, `direct_return`, …).
+    pub fn tools(&self) -> Vec<ToolDef> {
+        self.tool_defs
+            .read()
+            .expect("tool_defs lock poisoned")
+            .clone()
+    }
+
+    /// Update the `direct_return` flag on every tool for this server without reconnecting stdio.
+    pub fn set_all_direct_return(&self, direct_return: bool) {
+        let mut tools = self.tool_defs.write().expect("tool_defs lock poisoned");
+        for t in tools.iter_mut() {
+            t.direct_return = direct_return;
+        }
     }
 
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {

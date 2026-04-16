@@ -631,6 +631,67 @@ pub async fn install_tool(
     Ok(())
 }
 
+/// Install every catalog tool that is not already installed (same scope as [`installed_tool_ids`]).
+///
+/// Runs [`install_tool`] for each missing id (pull + `mcp.json` update per tool). Does **not** rebuild
+/// the MCP registry; callers should run a single registry rebuild after this returns.
+pub async fn install_all_catalog_tools(
+    runtime: &RuntimeInfo,
+    mcp_config_path: &Path,
+    mcp_cfg_lock: &tokio::sync::Mutex<()>,
+    log: &LogFn,
+) -> Result<String, String> {
+    let catalog = load_catalog().await?;
+    let installed: HashSet<String> = installed_tool_ids(mcp_config_path).into_iter().collect();
+    let to_install: Vec<&ToolEntry> = catalog
+        .tools
+        .iter()
+        .filter(|t| !installed.contains(t.id.as_str()))
+        .collect();
+
+    if to_install.is_empty() {
+        return Ok("All catalog tools are already installed.".to_string());
+    }
+
+    let mut succeeded: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for entry in to_install {
+        match install_tool(
+            entry.id.as_str(),
+            runtime,
+            mcp_config_path,
+            mcp_cfg_lock,
+            log,
+        )
+        .await
+        {
+            Ok(()) => succeeded.push(entry.id.clone()),
+            Err(e) => failures.push(format!("{}: {e}", entry.id)),
+        }
+    }
+
+    let mut msg = String::new();
+    if !succeeded.is_empty() {
+        msg.push_str(&format!(
+            "Installed {} tool(s): {}.",
+            succeeded.len(),
+            succeeded.join(", ")
+        ));
+    }
+    if !failures.is_empty() {
+        if !msg.is_empty() {
+            msg.push(' ');
+        }
+        msg.push_str("Failed: ");
+        msg.push_str(&failures.join("; "));
+    }
+
+    if succeeded.is_empty() && !failures.is_empty() {
+        return Err(msg);
+    }
+    Ok(msg)
+}
+
 /// Remove an MCP Tool Engine entry from `mcp.json` and remove the container image.
 pub async fn uninstall_tool(
     tool_id: &str,
@@ -676,6 +737,51 @@ pub async fn uninstall_tool(
     }
 
     Ok(())
+}
+
+/// Uninstall every installed Tool Engine catalog tool (same scope as [`installed_tool_ids`]).
+///
+/// Does **not** rebuild the MCP registry; callers should run a single registry rebuild after this
+/// returns successfully (including partial success when some tools were removed).
+pub async fn uninstall_all_catalog_tools(
+    runtime: &RuntimeInfo,
+    mcp_config_path: &Path,
+    mcp_cfg_lock: &tokio::sync::Mutex<()>,
+) -> Result<String, String> {
+    let ids = installed_tool_ids(mcp_config_path);
+    if ids.is_empty() {
+        return Ok("No catalog tools were installed.".to_string());
+    }
+
+    let mut removed: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for tool_id in ids {
+        match uninstall_tool(tool_id.as_str(), runtime, mcp_config_path, mcp_cfg_lock).await {
+            Ok(()) => removed.push(tool_id),
+            Err(e) => failures.push(format!("{tool_id}: {e}")),
+        }
+    }
+
+    let mut msg = String::new();
+    if !removed.is_empty() {
+        msg.push_str(&format!(
+            "Uninstalled {} tool(s): {}.",
+            removed.len(),
+            removed.join(", ")
+        ));
+    }
+    if !failures.is_empty() {
+        if !msg.is_empty() {
+            msg.push(' ');
+        }
+        msg.push_str("Failed: ");
+        msg.push_str(&failures.join("; "));
+    }
+
+    if removed.is_empty() && !failures.is_empty() {
+        return Err(msg);
+    }
+    Ok(msg)
 }
 
 // ── Custom tools (developer-added Docker images, local only) ──────────
