@@ -21,15 +21,10 @@ pub struct LogEntry {
     pub message: String,
 }
 
-/// Active "remember this session" recording state. While set, every completed turn is
-/// appended as an observation on the session entity in the Memory server.
 #[derive(Debug, Clone)]
 pub struct MemorySession {
-    /// Entity name in the knowledge graph, e.g. `session-20260416T183000Z`.
     pub entity_name: String,
-    pub started_at: DateTime<Utc>,
     pub turn_count: u32,
-    /// When true (`record` command), only user lines are saved — no model reply or tool loop.
     pub diary_only: bool,
 }
 

@@ -272,6 +272,25 @@ fn is_deprecated_mcp_tool(tool: &ToolDef) -> bool {
         .contains("DEPRECATED")
 }
 
+/// Strip `"description"` keys from nested property objects inside a JSON Schema to reduce
+/// token count. Keeps `type`, `properties`, `required`, `enum`, `items`, `default`, etc.
+fn compact_schema(schema: &Value) -> Value {
+    match schema {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                if k == "description" {
+                    continue;
+                }
+                out.insert(k.clone(), compact_schema(v));
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(compact_schema).collect()),
+        other => other.clone(),
+    }
+}
+
 fn build_ollama_tools(providers: &[Provider]) -> Value {
     let arr: Vec<Value> = providers
         .iter()
@@ -283,7 +302,7 @@ fn build_ollama_tools(providers: &[Provider]) -> Value {
                 "function": {
                     "name": t.name,
                     "description": t.description.clone().unwrap_or_default(),
-                    "parameters": t.input_schema,
+                    "parameters": compact_schema(&t.input_schema),
                 }
             })
         })
@@ -326,5 +345,36 @@ mod tests {
         let raw = json!({ "path": "pengine/readme.md" });
         let out = normalize_file_manager_tool_args(raw);
         assert_eq!(out["path"], "/app/pengine/readme.md");
+    }
+
+    #[test]
+    fn compact_schema_strips_descriptions() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The file path to read"
+                },
+                "encoding": {
+                    "type": "string",
+                    "description": "Character encoding",
+                    "enum": ["utf-8", "ascii"]
+                }
+            },
+            "required": ["path"]
+        });
+        let compact = compact_schema(&schema);
+        assert_eq!(compact["type"], "object");
+        assert_eq!(compact["required"], json!(["path"]));
+        assert!(compact["properties"]["path"].get("description").is_none());
+        assert_eq!(compact["properties"]["path"]["type"], "string");
+        assert!(compact["properties"]["encoding"]
+            .get("description")
+            .is_none());
+        assert_eq!(
+            compact["properties"]["encoding"]["enum"],
+            json!(["utf-8", "ascii"])
+        );
     }
 }
