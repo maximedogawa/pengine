@@ -79,7 +79,7 @@ After a successful push, get the digest:
 podman image inspect "${IMAGE}:${VERSION}" --format '{{index .RepoDigests 0}}'
 ```
 
-Update the `sha256:…` value in the matching `versions[]` entry in **`tools/mcp-tools.json`**. The app fetches this file from GitHub at runtime; the embedded `src-tauri/src/modules/tool_engine/tools.json` is the offline fallback.
+Update the `sha256:…` value in the matching `versions[]` entry in **`tools/mcp-tools.json`**. The app fetches this file from GitHub at runtime and embeds the same file at compile time as the offline fallback.
 
 ---
 
@@ -132,8 +132,7 @@ CI passes these as `docker build` args so you bump the npm version in the regist
 
 ## Files
 
-- **`tools/mcp-tools.json`** — tool registry (all tools, versions, digests, npm). CI and the app read this.
+- **`tools/mcp-tools.json`** — single-source tool registry (all tools, versions, digests, upstream). CI, the app at runtime, and the embedded offline fallback (`include_str!`) all read this file.
 - **`tools/<slug>/Dockerfile`** — image build context.
-- **`tools/update-upstream.sh`** — bump upstream npm versions (like `npm update`).
-- **`src-tauri/src/modules/tool_engine/tools.json`** — embedded catalog (offline fallback). Update after publish.
+- **`tools/update-upstream.sh`** — bump upstream npm/PyPI versions (like `npm update`).
 - **`.github/workflows/tools-publish.yml`** — CI workflow.

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-const EMBEDDED_CATALOG: &str = include_str!("tools.json");
+const EMBEDDED_CATALOG: &str = include_str!("../../../../tools/mcp-tools.json");
 
 /// Remote registry URL — raw GitHub content. The app fetches this at runtime so
 /// users get new tools / version bumps without waiting for a Pengine app update.
@@ -38,7 +38,8 @@ fn parse_catalog(json: &str) -> Option<ToolCatalog> {
 
 /// Load the embedded (compile-time) catalog. Always succeeds on a valid build.
 pub fn load_embedded_catalog() -> Result<ToolCatalog, String> {
-    serde_json::from_str(EMBEDDED_CATALOG).map_err(|e| format!("parse embedded tools.json: {e}"))
+    serde_json::from_str(EMBEDDED_CATALOG)
+        .map_err(|e| format!("parse embedded mcp-tools.json: {e}"))
 }
 
 /// Try repo `tools/mcp-tools.json` before the remote catalog (used by `bun run tauri dev` and

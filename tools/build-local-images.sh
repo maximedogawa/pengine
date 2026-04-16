@@ -38,7 +38,8 @@ if [[ -n "${BUILD_PLATFORM:-}" ]]; then
 fi
 
 # Space-separated (avoid @tsv + split quirks in some jq versions).
-while read -r slug image current; do
+# "-" sentinels stand in for absent upstream_mcp_{npm,pypi} fields so `read` gets a fixed column count.
+while read -r slug image current npm_pkg npm_ver pypi_pkg pypi_ver; do
   [[ -z "$slug" ]] && continue
   ctx="${ROOT}/tools/${slug}"
   df="${ctx}/Dockerfile"
@@ -48,7 +49,14 @@ while read -r slug image current; do
   fi
   tag="${image}:${current}"
   echo "=== build $slug -> $tag ==="
-  "${RUNTIME}" build "${PLATFORM_ARGS[@]}" -f "$df" -t "$tag" "$ctx"
-done < <(jq -r '.tools[] | "\(.id | split("/")[1]) \(.image) \(.current)"' "$REG")
+  build_args=()
+  [[ "$npm_pkg" != "-" ]] && build_args+=(--build-arg "UPSTREAM_MCP_NPM_PACKAGE=$npm_pkg")
+  [[ "$npm_ver" != "-" ]] && build_args+=(--build-arg "UPSTREAM_MCP_NPM_VERSION=$npm_ver")
+  [[ "$pypi_pkg" != "-" ]] && build_args+=(--build-arg "UPSTREAM_MCP_PYPI_PACKAGE=$pypi_pkg")
+  [[ "$pypi_ver" != "-" ]] && build_args+=(--build-arg "UPSTREAM_MCP_PYPI_VERSION=$pypi_ver")
+  "${RUNTIME}" build "${PLATFORM_ARGS[@]}" "${build_args[@]}" -f "$df" -t "$tag" "$ctx"
+done < <(jq -r '
+  .tools[] | "\(.id | split("/")[1]) \(.image) \(.current) \(.upstream_mcp_npm.package // "-") \(.upstream_mcp_npm.version // "-") \(.upstream_mcp_pypi.package // "-") \(.upstream_mcp_pypi.version // "-")"
+' "$REG")
 
 echo "Done. Images tagged as <image from mcp-tools.json>:<current>."

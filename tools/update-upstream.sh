@@ -41,46 +41,32 @@ bump_tool() {
   local idx="$1"
   local kind="$2"
   local new_upstream_ver="$3"
+  local slug="$4"
+  local upstream_key="upstream_mcp_${kind}"
   local current_tool
   local new_tool_version
   current_tool=$(jq -r ".tools[$idx].current" "$TOOLS_FILE")
   IFS='.' read -r major minor patch <<< "$current_tool"
   new_tool_version="${major}.${minor}.$((patch + 1))"
   echo "[$slug] bumping tool version: $current_tool → $new_tool_version"
+  local tmp
   tmp=$(mktemp)
-  if [[ "$kind" == "npm" ]]; then
-    jq --arg idx "$idx" \
-       --arg npm_ver "$new_upstream_ver" \
-       --arg tool_ver "$new_tool_version" \
-       --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-      .tools[($idx | tonumber)].upstream_mcp_npm.version = $npm_ver |
-      .tools[($idx | tonumber)].current = $tool_ver |
-      .tools[($idx | tonumber)].versions += [{
-        version: $tool_ver,
-        digest: "sha256:placeholder",
-        released_at: $now,
-        yanked: false,
-        revoked: false,
-        security: false
-      }]
-    ' "$TOOLS_FILE" > "$tmp" && mv "$tmp" "$TOOLS_FILE"
-  else
-    jq --arg idx "$idx" \
-       --arg pypi_ver "$new_upstream_ver" \
-       --arg tool_ver "$new_tool_version" \
-       --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-      .tools[($idx | tonumber)].upstream_mcp_pypi.version = $pypi_ver |
-      .tools[($idx | tonumber)].current = $tool_ver |
-      .tools[($idx | tonumber)].versions += [{
-        version: $tool_ver,
-        digest: "sha256:placeholder",
-        released_at: $now,
-        yanked: false,
-        revoked: false,
-        security: false
-      }]
-    ' "$TOOLS_FILE" > "$tmp" && mv "$tmp" "$TOOLS_FILE"
-  fi
+  jq --arg idx "$idx" \
+     --arg upstream_key "$upstream_key" \
+     --arg upstream_ver "$new_upstream_ver" \
+     --arg tool_ver "$new_tool_version" \
+     --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    .tools[($idx | tonumber)][$upstream_key].version = $upstream_ver |
+    .tools[($idx | tonumber)].current = $tool_ver |
+    .tools[($idx | tonumber)].versions += [{
+      version: $tool_ver,
+      digest: "sha256:placeholder",
+      released_at: $now,
+      yanked: false,
+      revoked: false,
+      security: false
+    }]
+  ' "$TOOLS_FILE" > "$tmp" && mv "$tmp" "$TOOLS_FILE"
   CHANGED=$((CHANGED + 1))
 }
 
@@ -108,7 +94,7 @@ for i in $(seq 0 $((tool_count - 1))); do
       continue
     fi
     echo "new version: $current_npm → $latest_npm"
-    bump_tool "$i" "npm" "$latest_npm"
+    bump_tool "$i" "npm" "$latest_npm" "$slug"
     continue
   fi
 
@@ -125,7 +111,7 @@ for i in $(seq 0 $((tool_count - 1))); do
       continue
     fi
     echo "new version: $current_pypi → $latest_pypi"
-    bump_tool "$i" "pypi" "$latest_pypi"
+    bump_tool "$i" "pypi" "$latest_pypi" "$slug"
     continue
   fi
 
@@ -135,7 +121,7 @@ done
 echo ""
 if [[ $CHANGED -gt 0 ]]; then
   echo "$CHANGED tool(s) updated. Review the diff, then commit and push:"
-  echo "  git add tools/mcp-tools.json src-tauri/src/modules/tool_engine/tools.json"
+  echo "  git add tools/mcp-tools.json"
   echo "  git commit -m 'chore: bump upstream MCP packages'"
   echo "  git push"
   echo ""
