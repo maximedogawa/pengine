@@ -818,14 +818,14 @@ async fn handle_toolengine_private_folder_put(
         ));
     }
 
-    std::fs::create_dir_all(&path).map_err(|e| {
-        (
+    if !std::path::Path::new(&path).is_absolute() {
+        return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("cannot create directory: {e}"),
+                error: "path must be an absolute host directory".into(),
             }),
-        )
-    })?;
+        ));
+    }
 
     let bot_id = state
         .connection
@@ -857,6 +857,14 @@ async fn handle_toolengine_private_folder_put(
                 crate::modules::mcp::types::ServerEntry::Stdio {
                     private_host_path, ..
                 } => {
+                    if let Err(e) = tokio::fs::create_dir_all(&path).await {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: format!("cannot create directory: {e}"),
+                            }),
+                        ));
+                    }
                     *private_host_path = Some(path.clone());
                 }
                 _ => {

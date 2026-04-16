@@ -251,8 +251,10 @@ function InlineEditForm({
       setTePrivatePathInput("");
       return;
     }
+    let cancelled = false;
     void (async () => {
       const cat = await fetchToolCatalog(5000);
+      if (cancelled) return;
       const t = cat?.find((x) => teServerKeyForToolId(x.id) === name && x.private_folder != null);
       if (t) {
         setTePrivateToolId(t.id);
@@ -262,6 +264,9 @@ function InlineEditForm({
         setTePrivatePathInput("");
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [name]);
 
   const isFs = argsTextLooksLikeFilesystem(argsText);
@@ -397,7 +402,12 @@ function InlineEditForm({
 
   // ── Submit ────────────────────────────────────────────────────────
 
+  const privatePathBaseline = entry.private_host_path ?? "";
+  const hasUnsavedPrivate =
+    tePrivateToolId != null && tePrivatePathInput.trim() !== privatePathBaseline.trim();
+
   const handleSubmit = async () => {
+    if (hasUnsavedPrivate || tePrivateApplyBusy) return;
     const args = argsText
       .split("\n")
       .map((l) => l.trim())
@@ -588,15 +598,20 @@ function InlineEditForm({
           Direct return (skip model summary)
         </label>
       </div>
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          disabled={busy || !command.trim()}
-          onClick={handleSubmit}
+          disabled={busy || !command.trim() || hasUnsavedPrivate || tePrivateApplyBusy}
+          onClick={() => void handleSubmit()}
           className="rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/15 disabled:opacity-40"
         >
           Save
         </button>
+        {hasUnsavedPrivate ? (
+          <p className="font-mono text-[10px] text-amber-200/90">
+            Apply data folder first (or revert the path field) before Save.
+          </p>
+        ) : null}
         <button
           type="button"
           onClick={onCancel}

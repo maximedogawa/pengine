@@ -5,6 +5,8 @@ use crate::modules::mcp::types::{CustomToolEntry, McpConfig, ServerEntry};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Sentinel used in `<bot_id>.<ext>` when no bot is connected yet. The file gets rewritten to
@@ -40,6 +42,15 @@ fn parse_catalog(json: &str) -> Option<ToolCatalog> {
     Some(cat)
 }
 
+static LOCAL_TOOLS_CATALOG_MTIME_CACHE: OnceLock<
+    Mutex<HashMap<PathBuf, (SystemTime, ToolCatalog)>>,
+> = OnceLock::new();
+
+fn local_tools_catalog_mtime_cache() -> &'static Mutex<HashMap<PathBuf, (SystemTime, ToolCatalog)>>
+{
+    LOCAL_TOOLS_CATALOG_MTIME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Load the embedded (compile-time) catalog. Always succeeds on a valid build.
 pub fn load_embedded_catalog() -> Result<ToolCatalog, String> {
     serde_json::from_str(EMBEDDED_CATALOG)
@@ -60,17 +71,37 @@ fn try_load_local_tools_catalog() -> Option<ToolCatalog> {
             }
         }
     }
+    let cache = local_tools_catalog_mtime_cache();
     for p in paths {
-        if let Ok(json) = std::fs::read_to_string(&p) {
-            if let Some(cat) = parse_catalog(&json) {
-                log::info!("loaded tool catalog from {}", p.display());
-                return Some(cat);
+        let mtime = match std::fs::metadata(&p) {
+            Ok(m) => m.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            Err(_) => continue,
+        };
+        {
+            let map = cache
+                .lock()
+                .expect("local tools catalog cache mutex poisoned");
+            if let Some((cached_mtime, cat)) = map.get(&p) {
+                if *cached_mtime == mtime {
+                    return Some(cat.clone());
+                }
             }
-            log::warn!(
-                "found {} but it did not parse as catalog schema v1",
-                p.display()
-            );
         }
+        let Ok(json) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        if let Some(cat) = parse_catalog(&json) {
+            log::info!("loaded tool catalog from {}", p.display());
+            let mut map = cache
+                .lock()
+                .expect("local tools catalog cache mutex poisoned");
+            map.insert(p, (mtime, cat.clone()));
+            return Some(cat);
+        }
+        log::warn!(
+            "found {} but it did not parse as catalog schema v1",
+            p.display()
+        );
     }
     None
 }

@@ -47,6 +47,22 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Tauri starts the loopback API in a spawned task; the webview may load first. Brief retries avoid a false "offline" flash. */
+/** Same error extraction as the former inline blocks on failed toolengine HTTP calls. */
+async function parseApiError(resp: Response): Promise<string> {
+  const raw = await resp.text();
+  let message = `Request failed (HTTP ${resp.status})`;
+  try {
+    const body = JSON.parse(raw) as { error?: string };
+    message = body.error ?? raw.trim();
+  } catch {
+    message = raw.trim() || message;
+  }
+  if (!message) {
+    message = `Request failed (HTTP ${resp.status})`;
+  }
+  return message;
+}
+
 async function fetchOkWithRetry(
   url: string,
   init: RequestInit | undefined,
@@ -114,15 +130,7 @@ export async function installTool(
       signal,
     });
     if (resp.ok) return { ok: true };
-    const raw = await resp.text();
-    let message = `Request failed (HTTP ${resp.status})`;
-    try {
-      const body = JSON.parse(raw) as { error?: string };
-      message = body.error ?? raw.trim();
-    } catch {
-      message = raw.trim() || message;
-    }
-    return { ok: false, error: message };
+    return { ok: false, error: await parseApiError(resp) };
   } catch (e) {
     return { ok: false, error: fetchErrorMessage(e) };
   } finally {
@@ -145,15 +153,7 @@ export async function putToolPrivateFolder(
       signal,
     });
     if (resp.ok) return { ok: true };
-    const raw = await resp.text();
-    let message = `Request failed (HTTP ${resp.status})`;
-    try {
-      const body = JSON.parse(raw) as { error?: string };
-      message = body.error ?? raw.trim();
-    } catch {
-      message = raw.trim() || message;
-    }
-    return { ok: false, error: message };
+    return { ok: false, error: await parseApiError(resp) };
   } catch (e) {
     return { ok: false, error: fetchErrorMessage(e) };
   } finally {
@@ -175,15 +175,7 @@ export async function uninstallTool(
       signal,
     });
     if (resp.ok) return { ok: true };
-    const raw = await resp.text();
-    let message = `Request failed (HTTP ${resp.status})`;
-    try {
-      const body = JSON.parse(raw) as { error?: string };
-      message = body.error ?? raw.trim();
-    } catch {
-      message = raw.trim() || message;
-    }
-    return { ok: false, error: message };
+    return { ok: false, error: await parseApiError(resp) };
   } catch (e) {
     return { ok: false, error: fetchErrorMessage(e) };
   } finally {
