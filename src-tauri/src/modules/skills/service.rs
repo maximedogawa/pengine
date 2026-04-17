@@ -84,6 +84,32 @@ pub fn set_skill_enabled(store_path: &Path, slug: &str, enabled: bool) -> Result
     write_disabled_set(store_path, &set)
 }
 
+/// Per-skill body cap in the system-prompt hint. Keeps the prompt short so local
+/// models re-read it cheaply on each turn. Skills needing more detail should
+/// front-load the critical URL/recipe in the first ~1600 chars (weather: wttr fast path + Open-Meteo fallback).
+const SKILL_HINT_BODY_CAP: usize = 1600;
+
+/// Injected when `weather` is enabled. Duplicates the README “fast path” so models still see it if the skill body truncates.
+const WEATHER_SKILL_MANDATORY_HINT: &str = "\n\n**MANDATORY for skill:weather:** \
+**One fetch first:** `https://wttr.in/PLACE?T&m` (spaces → `+`, e.g. `Breitenau+am+Hochlantsch`). \
+If the body is a normal multi-day forecast, **answer and stop** — do not call Open-Meteo in the same run. \
+**Open-Meteo** only if wttr fails or raw JSON is needed: \
+(1) `https://geocoding-api.open-meteo.com/v1/search?name=…&count=10`; \
+(2) if `results` is missing or empty, **one** retry with shorter `name` + `countryCode` \
+(e.g. `https://geocoding-api.open-meteo.com/v1/search?name=Breitenau&countryCode=AT&count=10` for “Breitenau am Hochlantsch”) \
+and pick the row whose `admin3`/`admin2`/`admin1` matches the user phrase; \
+(3) `https://api.open-meteo.com/v1/forecast?latitude=…&longitude=…&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&forecast_days=7&timezone=auto`. \
+Never claim the place was not found after a single geocode on compound EU names. \
+Reply per **How to answer**: plain language; no coordinates or WMO codes unless the user asked for technical detail.";
+
+const SKILL_HINT_INTRO: &str =
+    "\n\nAvailable skills. Follow each skill's recipe exactly — it tells you \
+WHICH URL to fetch and HOW MANY calls to make. Stop once you can answer; do not \
+hop to unrelated hosts or invent alternate pages. If a skill orders retries on \
+the same documented API (e.g. shorter geocode query + countryCode), do those \
+steps — they are part of the recipe, not forbidden probing. \
+Never claim you lack access — the fetch tool is available.";
+
 /// Build a system-prompt fragment describing the enabled skills so the agent
 /// knows when/how to invoke fetch tools for each. Returns `""` if there are
 /// none enabled.
@@ -95,22 +121,39 @@ pub fn skills_prompt_hint(store_path: &Path) -> String {
     if skills.is_empty() {
         return String::new();
     }
-    let mut out = String::from(
-        "\n\nAvailable skills. Follow each skill's recipe exactly — it tells you \
-WHICH URL to fetch and HOW MANY calls to make. Stop calling tools the moment \
-you have enough data to answer; do not probe alternative URLs or try variants. \
-Never claim you lack access — the fetch tool is available.",
-    );
+    let mut out = String::from(SKILL_HINT_INTRO);
     for s in &skills {
+        let trimmed = s.body.trim();
+        let body = truncate_for_prompt(trimmed, SKILL_HINT_BODY_CAP);
         out.push_str(&format!(
             "\n\n── skill:{slug} — {name} ──\n{desc}\n{body}",
             slug = s.slug,
             name = s.name,
             desc = s.description,
-            body = s.body.trim_end(),
         ));
     }
+    if skills.iter().any(|s| s.slug == "weather") {
+        out.push_str(WEATHER_SKILL_MANDATORY_HINT);
+    }
     out
+}
+
+/// Truncate on a char boundary and append an ellipsis marker if we cut.
+fn truncate_for_prompt(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Prefer the last newline before `end` so we don't cut mid-line / mid-fence.
+    if let Some(nl) = s[..end].rfind('\n') {
+        if nl > max / 2 {
+            end = nl;
+        }
+    }
+    format!("{}\n…", &s[..end])
 }
 
 /// List every discoverable skill. Custom skills shadow bundled ones with the same slug.
@@ -508,5 +551,27 @@ mod tests {
         set_skill_enabled(&fake_store, "demo", false).unwrap();
         delete_custom_skill(&fake_store, "demo").unwrap();
         assert!(!read_disabled_set(&fake_store).contains("demo"));
+    }
+
+    #[test]
+    fn weather_skill_appends_mandatory_wttr_then_geocode_hint() {
+        let tmp = tempdir().unwrap();
+        let fake_store = tmp.path().join("connection.json");
+        let weather_md = "---\nname: weather\ndescription: test\ntags: []\n---\n\n# x\n";
+        write_custom_skill(&fake_store, "weather", weather_md).unwrap();
+        let hint = skills_prompt_hint(&fake_store);
+        assert!(
+            hint.contains("MANDATORY for skill:weather"),
+            "expected mandatory block in:\n{hint}"
+        );
+        assert!(
+            hint.contains("wttr.in"),
+            "expected wttr fast path in:\n{hint}"
+        );
+        assert!(hint.contains("countryCode"), "hint={hint}");
+        assert!(
+            hint.contains("How to answer"),
+            "expected answer-style reminder in:\n{hint}"
+        );
     }
 }

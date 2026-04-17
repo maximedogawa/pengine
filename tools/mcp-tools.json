@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_at": "2026-04-14T00:00:00Z",
-  "catalog_revision": 4,
+  "catalog_revision": 5,
   "valid_until": "2026-05-14T00:00:00Z",
   "minimum_pengine_version": "0.5.0",
   "tools": [
@@ -55,7 +55,7 @@
     {
       "id": "pengine/fetch",
       "name": "Fetch",
-      "description": "Official MCP fetch server: download URLs and return markdown-friendly content for the model.",
+      "description": "Official MCP fetch server: download URLs and return markdown-friendly content for the model. Runs with --ignore-robots-txt so public APIs (e.g. Open-Meteo) are not blocked for autonomous tool calls.",
       "image": "ghcr.io/pengine-ai/pengine-fetch",
       "current": "0.1.0",
       "versions": [
@@ -78,7 +78,7 @@
         "package": "mcp-server-fetch",
         "version": "2025.4.7"
       },
-      "mcp_server_cmd": [],
+      "mcp_server_cmd": ["--ignore-robots-txt"],
       "commands": [
         { "name": "fetch", "description": "Fetch a URL and return extracted content (markdown by default)" }
       ],

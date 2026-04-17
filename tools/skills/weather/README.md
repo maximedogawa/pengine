@@ -1,34 +1,49 @@
 ---
 name: weather
-description: Get current weather for any location with a single fetch — no API key.
-version: 1.1.0
-author: Peter Steinberger (@steipete)
-source: https://clawhub.ai/steipete/weather
-license: MIT-0
-tags: [weather, forecast, climate]
-requires: []
+description: Weather and forecasts (no API key). One wttr.in fetch by default; Open-Meteo if that fails. Chat-style answers — see “How to answer”.
+homepage: https://wttr.in/:help
+metadata: {"clawdbot":{"emoji":"🌤️","requires":{"bins":["curl"]}}}
+tags: [weather, forecast, wttr, open-meteo]
 ---
 
 # Weather
 
-For ANY "weather in X" / "X weather forecast" question, make **exactly one** `fetch` call and return the result. Do not probe multiple services.
+Free: **wttr.in** (text) and **Open-Meteo** (JSON). No keys.
 
-## The one call
+## Default: one request
 
-```
-https://wttr.in/<LOCATION>?format=3
-```
+`https://wttr.in/PLACE?T&m` — spaces → `+` (e.g. `Breitenau+am+Hochlantsch`). **`T`** = multi-day terminal forecast, **`m`** = metric.
 
-Replace `<LOCATION>` with the place from the user (URL-encode spaces as `%20`). Response is a single line like `Vienna: ⛅ +14°C`. Return that as your answer — do not fetch anything else.
+If the response looks like a real forecast → **summarize and stop**. No Open-Meteo unless wttr failed, error page, or you need JSON.
 
-## Only if the user explicitly asks for hourly / numeric data
+## How to answer
 
-Then (and only then) use Open-Meteo. Skip otherwise.
+Chat, not a datasheet: short intro on how it *feels*, then compact day lines (date, °C, rain when it matters). No **lat/long**, **WMO codes**, or **bold datasheet** headings unless the user asked for technical detail.
 
-```
-https://api.open-meteo.com/v1/forecast?latitude=<LAT>&longitude=<LON>&current_weather=true&timezone=auto
-```
+## wttr.in (curl / fetch)
 
-Geocode first: `https://geocoding-api.open-meteo.com/v1/search?name=<LOCATION>&count=1` → `results[0].{latitude,longitude}`.
+| Goal | Example |
+|------|---------|
+| Multi-day (preferred) | `curl -s "wttr.in/London?T&m"` |
+| One line now | `curl -s "wttr.in/London?format=3"` |
+| Custom one-liner | `curl -s "wttr.in/London?format=%l:+%c+%t+%h+%w"` |
 
-Weather codes: 0 clear · 1-3 cloudy · 45/48 fog · 51-67 rain · 71-77 snow · 80-82 showers · 95-99 thunder.
+Tips: `+` for spaces; `?m` / `?u` units; `?1` today only; `?0` now only; airports `wttr.in/JFK`; PNG `wttr.in/Berlin.png`.
+
+## Open-Meteo (fallback)
+
+**Hosts:** `geocoding-api.open-meteo.com`, `api.open-meteo.com` only — not `open-meteo.com` HTML.
+
+**Flow (max 2 geocode + 1 forecast):**
+
+1. `https://geocoding-api.open-meteo.com/v1/search?name=PLACE&count=10` (spaces as `+`)
+2. If `results` missing/empty: **one** retry — shorter `name` + `countryCode` (e.g. `name=Breitenau&countryCode=AT` for *Breitenau am Hochlantsch*). Pick the row whose `admin3`/`admin2`/`admin1` matches the user phrase.
+3. `https://api.open-meteo.com/v1/forecast?latitude=LAT&longitude=LON&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&forecast_days=7&timezone=auto` — extend `forecast_days` to 7–16 if they asked for more days.
+
+Current only: `curl -s "https://api.open-meteo.com/v1/forecast?latitude=51.5&longitude=-0.12&current_weather=true"`
+
+**JSON:** `daily.time`, `temperature_2m_max` / `_min`, `precipitation_probability_max`, `weathercode` — translate codes to plain words (see [weather codes](https://open-meteo.com/en/docs#api_form)); never paste codes to the user unless asked.
+
+## When to use
+
+Named place — current weather or forecast.
