@@ -1,5 +1,5 @@
 use crate::modules::ollama::constants::{OLLAMA_CHAT_URL, OLLAMA_PS_URL, OLLAMA_TAGS_URL};
-use crate::shared::text::strip_think;
+use crate::shared::text::normalize_assistant_message_content;
 use std::sync::OnceLock;
 
 static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
@@ -117,7 +117,7 @@ pub struct ChatResult {
 
 /// Per-request model controls. Extend here as we add knobs (`num_predict`,
 /// `num_ctx`, `keep_alive`, …); keep the surface of `chat_with_tools` stable.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ChatOptions {
     /// Ollama `think` flag. `Some(true)` enables reasoning mode (qwen3 et al.),
     /// `Some(false)` disables it, `None` omits the field so the model's own
@@ -128,9 +128,19 @@ pub struct ChatOptions {
     /// recompute; setting this explicitly lets Ollama reuse the cached prefix
     /// across turns.
     pub num_ctx: u32,
+    /// Ollama `options.num_predict`. Caps completion length — critical for
+    /// qwen3-class models that still emit long hidden chains when synthesizing
+    /// after tool results even with `think: false`.
+    pub num_predict: Option<u32>,
+    /// Ollama `options.temperature`. Lower after tools → shorter, faster answers.
+    pub temperature: Option<f32>,
     /// Ollama `keep_alive`. How long the model stays resident after a request.
     /// `"30m"` avoids cold-start reloads between user messages.
     pub keep_alive: &'static str,
+    /// When set, Ollama structured output (`format` in the chat payload). Use only
+    /// for plain chat requests (no tools); grammar masks invalid tokens so the
+    /// model emits JSON matching the schema.
+    pub format: Option<serde_json::Value>,
 }
 
 impl Default for ChatOptions {
@@ -138,9 +148,24 @@ impl Default for ChatOptions {
         Self {
             think: None,
             num_ctx: 8192,
+            num_predict: None,
+            temperature: None,
             keep_alive: "30m",
+            format: None,
         }
     }
+}
+
+/// JSON schema for the tool-summary pass: one string field, no extra keys.
+pub fn summarize_reply_json_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "reply": { "type": "string" }
+        },
+        "required": ["reply"],
+        "additionalProperties": false
+    })
 }
 
 /// Tool-aware chat for the agent loop. Sends a full message history plus a
@@ -161,6 +186,10 @@ pub async fn chat_with_tools(
     let mut payload = build_payload(model, messages, options);
     if has_tools {
         payload["tools"] = tools.clone();
+        // `format` constrains the whole completion; tool turns need native `tool_calls` shape.
+        if let Some(obj) = payload.as_object_mut() {
+            obj.remove("format");
+        }
     }
 
     let (status, body) = post_chat(&payload).await?;
@@ -173,18 +202,22 @@ pub async fn chat_with_tools(
             if !st.is_success() {
                 return Err(format!("ollama chat HTTP {st}: {b}"));
             }
-            return build_chat_result(&b, false);
+            return build_chat_result(&b, false, options.format.is_some());
         }
         return Err(format!("ollama chat HTTP {status}: {body}"));
     }
 
-    build_chat_result(&body, has_tools)
+    build_chat_result(&body, has_tools, options.format.is_some())
 }
 
-fn build_chat_result(body: &serde_json::Value, tools_sent: bool) -> Result<ChatResult, String> {
+fn build_chat_result(
+    body: &serde_json::Value,
+    tools_sent: bool,
+    expect_json_object_reply: bool,
+) -> Result<ChatResult, String> {
     let (prompt_tokens, eval_tokens) = extract_token_counts(body);
     Ok(ChatResult {
-        message: extract_message(body)?,
+        message: extract_message(body, expect_json_object_reply)?,
         tools_sent,
         prompt_tokens,
         eval_tokens,
@@ -196,15 +229,27 @@ fn build_payload(
     messages: &serde_json::Value,
     options: &ChatOptions,
 ) -> serde_json::Value {
+    let mut opt = serde_json::Map::new();
+    opt.insert("num_ctx".to_string(), serde_json::json!(options.num_ctx));
+    if let Some(n) = options.num_predict {
+        opt.insert("num_predict".to_string(), serde_json::json!(n));
+    }
+    if let Some(t) = options.temperature {
+        opt.insert("temperature".to_string(), serde_json::json!(t));
+    }
+
     let mut payload = serde_json::json!({
         "model": model,
         "messages": messages,
         "stream": false,
         "keep_alive": options.keep_alive,
-        "options": { "num_ctx": options.num_ctx },
+        "options": serde_json::Value::Object(opt),
     });
     if let Some(think) = options.think {
         payload["think"] = serde_json::Value::Bool(think);
+    }
+    if let Some(fmt) = &options.format {
+        payload["format"] = fmt.clone();
     }
     payload
 }
@@ -231,18 +276,19 @@ async fn post_chat(
     Ok((status, body))
 }
 
-fn extract_message(body: &serde_json::Value) -> Result<serde_json::Value, String> {
+fn extract_message(
+    body: &serde_json::Value,
+    expect_json_object_reply: bool,
+) -> Result<serde_json::Value, String> {
     let mut msg = body
         .get("message")
         .cloned()
         .ok_or_else(|| format!("ollama protocol error: missing `message` in response: {body}"))?;
 
-    // qwen3 and similar emit `<think>…</think>` inside `content` even when
-    // `think: false` is requested. Strip once, here, so no downstream caller
-    // has to remember to clean it — neither the Telegram reply nor the
-    // messages history passed to the next step should contain reasoning.
+    // Strip template-injected reasoning, then apply our reply contract (JSON or
+    // `<pengine_reply>`) so Telegram and the next-step history never carry plan text.
     if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-        let cleaned = strip_think(content);
+        let cleaned = normalize_assistant_message_content(content, expect_json_object_reply);
         if let Some(obj) = msg.as_object_mut() {
             obj.insert("content".to_string(), serde_json::Value::String(cleaned));
         }

@@ -1,9 +1,10 @@
 use super::client::McpClient;
 use super::native::NativeProvider;
-use super::types::ToolDef;
+use super::types::{ToolDef, ToolRisk};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Normalize File Manager paths: absolute container paths pass through; relative `pengine/README.md` → `/app/pengine/README.md`.
 fn rewrite_file_manager_path(s: &str) -> String {
@@ -133,6 +134,20 @@ pub struct ToolRegistry {
     cached_tool_names: Vec<String>,
 }
 
+/// Subset of tools passed to the model for one turn (routing + observability).
+#[derive(Debug, Clone)]
+pub struct ToolContextSelection {
+    pub tools_json: Value,
+    pub total_count: usize,
+    pub active_count: usize,
+    pub used_subset: bool,
+    /// Why this shape was chosen: `full` = entire registry, `ranked` = keyword/recent top-K,
+    /// `core_no_signal` = no scores (e.g. non-English) — always-on + memory only.
+    pub routing: &'static str,
+    pub select_ms: u64,
+    pub high_risk_active: usize,
+}
+
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self {
@@ -171,15 +186,64 @@ impl ToolRegistry {
         self.cached_ollama_tools.clone()
     }
 
-    /// Tools scoped to `user_message`: keeps the top-K that share lowercase
-    /// tokens with the query (plus the always-on core set). Falls back to the
-    /// full cached list when the registry is small, the query is tokenless, or
-    /// no tool matches — so needed tools are never silently hidden.
-    pub fn ollama_tools_for(&self, user_message: &str) -> Value {
+    /// Tools for one model turn: keyword + **recent-use** ranking, always-on
+    /// tools, and (when provided) every tool on the memory MCP server.
+    pub fn select_tools_for_turn(
+        &self,
+        user_message: &str,
+        recent_tool_names: &[String],
+        memory_server: Option<&str>,
+    ) -> ToolContextSelection {
+        let t0 = Instant::now();
         let all = self.all_tools();
-        match route_tools(&all, user_message) {
-            Some(selected) => build_ollama_tools(&selected),
-            None => self.cached_ollama_tools.clone(),
+        let total = all.len();
+        match route_tools(&all, user_message, recent_tool_names, memory_server) {
+            ToolRoutePlan::Subset {
+                tools: selected,
+                routing,
+            } => {
+                let select_ms = t0.elapsed().as_millis() as u64;
+                let high = selected.iter().filter(|t| t.risk == ToolRisk::High).count();
+                let active = selected.len();
+                ToolContextSelection {
+                    tools_json: build_ollama_tools(&selected),
+                    total_count: total,
+                    active_count: active,
+                    used_subset: true,
+                    routing,
+                    select_ms,
+                    high_risk_active: high,
+                }
+            }
+            ToolRoutePlan::FullCatalog => {
+                let select_ms = t0.elapsed().as_millis() as u64;
+                let high = all.iter().filter(|t| t.risk == ToolRisk::High).count();
+                ToolContextSelection {
+                    tools_json: self.cached_ollama_tools.clone(),
+                    total_count: total,
+                    active_count: total,
+                    used_subset: false,
+                    routing: "full",
+                    select_ms,
+                    high_risk_active: high,
+                }
+            }
+        }
+    }
+
+    /// Full catalog (no subset). Used after routing escalation.
+    pub fn full_tool_context(&self) -> ToolContextSelection {
+        let all = self.all_tools();
+        let total = self.cached_tool_names.len();
+        let high = all.iter().filter(|t| t.risk == ToolRisk::High).count();
+        ToolContextSelection {
+            tools_json: self.cached_ollama_tools.clone(),
+            total_count: total,
+            active_count: total,
+            used_subset: false,
+            routing: "full_escalation",
+            select_ms: 0,
+            high_risk_active: high,
         }
     }
 
@@ -348,26 +412,88 @@ const ROUTING_STOPWORDS: &[&str] = &[
 /// intent words, typos) — a tiny token cost for a big correctness win.
 const ALWAYS_ON_TOOL_NAMES: &[&str] = &["fetch", "time"];
 
-/// Returns the routed tool subset, or `None` to signal that the caller should
-/// keep the full cached list (small registry, tokenless query, or ambiguous
-/// scoring where no tool matches).
-fn route_tools(tools: &[ToolDef], user_message: &str) -> Option<Vec<ToolDef>> {
-    if tools.len() <= ROUTED_TOOL_BUDGET + ALWAYS_ON_TOOL_NAMES.len() {
-        return None;
+#[derive(Debug)]
+enum ToolRoutePlan {
+    FullCatalog,
+    Subset {
+        tools: Vec<ToolDef>,
+        routing: &'static str,
+    },
+}
+
+fn registry_routing_threshold(tools: &[ToolDef], memory_server: Option<&str>) -> usize {
+    let memory_tool_count = memory_server
+        .map(|m| {
+            tools
+                .iter()
+                .filter(|t| t.server_name.eq_ignore_ascii_case(m))
+                .count()
+        })
+        .unwrap_or(0);
+    ROUTED_TOOL_BUDGET + ALWAYS_ON_TOOL_NAMES.len() + memory_tool_count
+}
+
+fn push_always_on_and_memory_tools(
+    tools: &[ToolDef],
+    memory_server: Option<&str>,
+    selected: &mut Vec<ToolDef>,
+    seen: &mut HashSet<String>,
+) {
+    for tool in tools {
+        if ALWAYS_ON_TOOL_NAMES
+            .iter()
+            .any(|n| tool.name.eq_ignore_ascii_case(n))
+            && seen.insert(tool.name.clone())
+        {
+            selected.push(tool.clone());
+        }
+    }
+    if let Some(m) = memory_server {
+        for tool in tools {
+            if tool.server_name.eq_ignore_ascii_case(m) && seen.insert(tool.name.clone()) {
+                selected.push(tool.clone());
+            }
+        }
+    }
+}
+
+fn core_tool_subset(tools: &[ToolDef], memory_server: Option<&str>) -> Vec<ToolDef> {
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    push_always_on_and_memory_tools(tools, memory_server, &mut selected, &mut seen);
+    selected.sort_by(|a, b| a.name.cmp(&b.name));
+    selected
+}
+
+/// Large registries: return a subset. Small registries (`len` ≤ threshold): pass the full list.
+/// When every tool scores 0 (common for non-English queries before any tool was used recently),
+/// use **core** tools only (always-on + memory), not the full catalog — same ballpark as after
+/// the first `fetch` when `fetch` gets a recent-use score.
+fn route_tools(
+    tools: &[ToolDef],
+    user_message: &str,
+    recent_tool_names: &[String],
+    memory_server: Option<&str>,
+) -> ToolRoutePlan {
+    let threshold = registry_routing_threshold(tools, memory_server);
+    if tools.len() <= threshold {
+        return ToolRoutePlan::FullCatalog;
     }
 
     let query_tokens = route_tokens(user_message);
-    if query_tokens.is_empty() {
-        return None;
-    }
-
     let mut scored: Vec<(usize, &ToolDef)> = tools
         .iter()
-        .map(|t| (score_tool(t, &query_tokens), t))
+        .map(|t| {
+            let s = score_tool_combined(t, &query_tokens, recent_tool_names);
+            (s, t)
+        })
         .collect();
 
     if scored.iter().all(|(s, _)| *s == 0) {
-        return None;
+        return ToolRoutePlan::Subset {
+            tools: core_tool_subset(tools, memory_server),
+            routing: "core_no_signal",
+        };
     }
 
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
@@ -384,17 +510,54 @@ fn route_tools(tools: &[ToolDef], user_message: &str) -> Option<Vec<ToolDef>> {
         }
     }
 
-    for tool in tools {
-        if ALWAYS_ON_TOOL_NAMES
-            .iter()
-            .any(|n| tool.name.eq_ignore_ascii_case(n))
-            && seen.insert(tool.name.clone())
-        {
-            selected.push(tool.clone());
+    push_always_on_and_memory_tools(tools, memory_server, &mut selected, &mut seen);
+
+    ToolRoutePlan::Subset {
+        tools: selected,
+        routing: "ranked",
+    }
+}
+
+fn score_tool_combined(
+    tool: &ToolDef,
+    query_tokens: &HashSet<String>,
+    recent_tool_names: &[String],
+) -> usize {
+    let mut s = if query_tokens.is_empty() {
+        0
+    } else {
+        score_tool(tool, query_tokens)
+    };
+    s += recent_tool_score(tool, recent_tool_names);
+    s
+}
+
+/// Weight recent invocations: newest names in the deque score highest.
+fn recent_tool_score(tool: &ToolDef, recent: &[String]) -> usize {
+    let mut score = 0usize;
+    for (i, r) in recent.iter().enumerate() {
+        if tool_name_matches_recent(tool, r) {
+            let weight = recent.len().saturating_sub(i);
+            score += 8 + weight * 4;
         }
     }
+    score
+}
 
-    Some(selected)
+fn tool_name_matches_recent(tool: &ToolDef, recent: &str) -> bool {
+    let r = recent.trim();
+    if r.is_empty() {
+        return false;
+    }
+    if tool.name.eq_ignore_ascii_case(r) {
+        return true;
+    }
+    if let Some((_, short)) = r.rsplit_once('.') {
+        if tool.name.eq_ignore_ascii_case(short) {
+            return true;
+        }
+    }
+    false
 }
 
 fn route_tokens(s: &str) -> HashSet<String> {
@@ -469,6 +632,7 @@ fn first_sentence_end(s: &str, cap: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::mcp::types::ToolRisk;
 
     #[test]
     fn rewrite_container_and_relative() {
@@ -568,5 +732,77 @@ mod tests {
             shorten_tool_description(desc, 80),
             "Use v1.0 of the API for this endpoint."
         );
+    }
+
+    #[test]
+    fn tool_name_matches_recent_qualified() {
+        let t = ToolDef {
+            server_name: "srv".into(),
+            name: "fetch".into(),
+            description: None,
+            input_schema: json!({}),
+            direct_return: false,
+            category: None,
+            risk: ToolRisk::Low,
+        };
+        assert!(super::tool_name_matches_recent(&t, "fetch"));
+        assert!(super::tool_name_matches_recent(&t, "srv.fetch"));
+        assert!(!super::tool_name_matches_recent(&t, "other"));
+    }
+
+    #[test]
+    fn recent_tool_score_boosts_latest() {
+        let t = ToolDef {
+            server_name: "x".into(),
+            name: "alpha".into(),
+            description: None,
+            input_schema: json!({}),
+            direct_return: false,
+            category: None,
+            risk: ToolRisk::Low,
+        };
+        let recent = vec!["beta".into(), "alpha".into()];
+        let s = super::recent_tool_score(&t, &recent);
+        assert!(s > 0);
+    }
+
+    #[test]
+    fn routing_all_zero_scores_uses_core_tools_not_full_catalog() {
+        let mut tools: Vec<ToolDef> = (0..12)
+            .map(|i| ToolDef {
+                server_name: "srv".into(),
+                name: format!("misc_{i}"),
+                description: None,
+                input_schema: json!({}),
+                direct_return: false,
+                category: None,
+                risk: ToolRisk::Low,
+            })
+            .collect();
+        for name in ["fetch", "time"] {
+            tools.push(ToolDef {
+                server_name: "srv".into(),
+                name: name.into(),
+                description: None,
+                input_schema: json!({}),
+                direct_return: false,
+                category: None,
+                risk: ToolRisk::Low,
+            });
+        }
+        // 14 tools > threshold (8+2+0) without memory server
+        let plan = super::route_tools(&tools, "wie wird morgen das wetter", &[], None);
+        match plan {
+            super::ToolRoutePlan::Subset {
+                tools: sel,
+                routing,
+            } => {
+                assert_eq!(routing, "core_no_signal");
+                assert_eq!(sel.len(), 2);
+                assert!(sel.iter().any(|t| t.name == "fetch"));
+                assert!(sel.iter().any(|t| t.name == "time"));
+            }
+            super::ToolRoutePlan::FullCatalog => panic!("expected core subset"),
+        }
     }
 }

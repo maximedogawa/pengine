@@ -4,18 +4,72 @@ use crate::modules::ollama::service::{self as ollama, ChatOptions};
 use crate::modules::skills::service as skills;
 use crate::modules::tool_engine::service::workspace_app_bind_pairs;
 use crate::shared::state::{AppState, MemorySession};
-use crate::shared::text::{compact_tool_output, truncate_for_model};
+use crate::shared::text::{
+    compact_tool_output, truncate_for_model, PENGINE_OUTPUT_CONTRACT_LEAD,
+    PENGINE_POST_TOOL_REMINDER,
+};
 use chrono::Utc;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
 const MAX_STEPS: usize = 3;
 
+/// After tool results (agent step ≥1), cap completion tokens. The model should
+/// put the user-visible answer in `<pengine_reply>` (see system prompt); this
+/// cap bounds wall time if it drafts a long `<pengine_plan>`. ~1024 fits a
+/// concise multilingual answer in most cases.
+const POST_TOOL_NUM_PREDICT: u32 = 1024;
+const POST_TOOL_TEMPERATURE: f32 = 0.35;
+
+/// Fallback summarize pass when the tool loop exits without a user-visible reply.
+const SUMMARY_NUM_PREDICT: u32 = 768;
+const SUMMARY_TEMPERATURE: f32 = 0.3;
+
+fn chat_options_for_agent_step(step: usize, user_wants_think: bool) -> ChatOptions {
+    if step == 0 {
+        ChatOptions {
+            think: Some(user_wants_think),
+            num_predict: None,
+            temperature: None,
+            ..ChatOptions::default()
+        }
+    } else {
+        ChatOptions {
+            think: Some(false),
+            num_predict: Some(POST_TOOL_NUM_PREDICT),
+            temperature: Some(POST_TOOL_TEMPERATURE),
+            ..ChatOptions::default()
+        }
+    }
+}
+
 /// Cap on tool output fed back to the model. Raw fetch bodies can be 5–10 kB
 /// of HTML; the model only needs the first screen to answer, and larger
 /// feedback balloons the step-1 prompt. Direct replies (answers routed
 /// straight to the user) are NOT truncated.
 const TOOL_OUTPUT_CHAR_CAP: usize = 4000;
+
+fn push_ephemeral_post_tool_reminder(messages: &mut serde_json::Value) {
+    if let Some(arr) = messages.as_array_mut() {
+        arr.push(json!({
+            "role": "system",
+            "content": PENGINE_POST_TOOL_REMINDER,
+        }));
+    }
+}
+
+fn pop_ephemeral_post_tool_reminder(messages: &mut serde_json::Value) {
+    let Some(arr) = messages.as_array_mut() else {
+        return;
+    };
+    let pop = arr.last().is_some_and(|m| {
+        m.get("role").and_then(|r| r.as_str()) == Some("system")
+            && m.get("content").and_then(|c| c.as_str()) == Some(PENGINE_POST_TOOL_REMINDER)
+    });
+    if pop {
+        arr.pop();
+    }
+}
 
 /// Source of a think-mode decision for this turn, mainly for observability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,7 +430,7 @@ async fn spawn_append(state: &AppState, mem: &MemoryProvider, entity: &str, cont
 /// The order is stable turn-to-turn so Ollama can reuse its KV-cache prefix.
 async fn build_system_prompt(state: &AppState, has_tools: bool, has_memory: bool) -> String {
     if !has_tools {
-        return "Answer concisely.".to_string();
+        return format!("{PENGINE_OUTPUT_CONTRACT_LEAD}Answer concisely.");
     }
 
     let fs_hint = {
@@ -420,7 +474,7 @@ async fn build_system_prompt(state: &AppState, has_tools: bool, has_memory: bool
     }
 
     format!(
-        "Assistant with tools. Call a tool only for external data; otherwise answer directly. \
+        "{PENGINE_OUTPUT_CONTRACT_LEAD}Assistant with tools. Call a tool only for external data; otherwise answer directly. \
          After tool results, answer immediately. Be concise.{fs_hint}{mem_hint}{skills_hint}"
     )
 }
@@ -430,23 +484,42 @@ async fn run_model_turn(
     user_message: &str,
     think: bool,
 ) -> Result<TurnResult, String> {
-    let chat_opts = ChatOptions {
-        think: Some(think),
-        ..ChatOptions::default()
-    };
     let model = match state.preferred_ollama_model.read().await.clone() {
         Some(m) => m,
         None => ollama::active_model().await?,
     };
 
-    let (ollama_tools, has_tools, has_memory) = {
+    let recent_tools = state.recent_tools_snapshot().await;
+    let (has_tools, has_memory, memory_server_key) = {
         let reg = state.mcp.read().await;
+        let mem = MemoryProvider::detect(&reg);
         (
-            reg.ollama_tools(),
             !reg.is_empty(),
-            MemoryProvider::detect(&reg).is_some(),
+            mem.is_some(),
+            mem.map(|m| m.server_name().to_string()),
         )
     };
+
+    let mut tool_ctx = {
+        let reg = state.mcp.read().await;
+        reg.select_tools_for_turn(user_message, &recent_tools, memory_server_key.as_deref())
+    };
+    state
+        .emit_log(
+            "tool_ctx",
+            &format!(
+                "select_ms={} active={}/{} subset={} routing={} high_risk={} recent_n={}",
+                tool_ctx.select_ms,
+                tool_ctx.active_count,
+                tool_ctx.total_count,
+                tool_ctx.used_subset,
+                tool_ctx.routing,
+                tool_ctx.high_risk_active,
+                recent_tools.len()
+            ),
+        )
+        .await;
+    state.record_tool_selection_ms(tool_ctx.select_ms).await;
 
     let system = build_system_prompt(state, has_tools, has_memory).await;
 
@@ -461,16 +534,27 @@ async fn run_model_turn(
     let mut tool_results: Vec<(String, String)> = Vec::new();
     let mut tools_supported = true;
     let empty_tools = json!([]);
+    let mut routing_escalated = false;
 
     for step in 0..MAX_STEPS {
         let t0 = Instant::now();
         let effective_tools = if tools_supported {
-            &ollama_tools
+            &tool_ctx.tools_json
         } else {
             &empty_tools
         };
-        let result =
-            ollama::chat_with_tools(&model, &messages, effective_tools, &chat_opts).await?;
+        let chat_opts = chat_options_for_agent_step(step, think);
+
+        let inject_post_tool = step > 0;
+        if inject_post_tool {
+            push_ephemeral_post_tool_reminder(&mut messages);
+        }
+
+        let result = ollama::chat_with_tools(&model, &messages, effective_tools, &chat_opts).await;
+        if inject_post_tool {
+            pop_ephemeral_post_tool_reminder(&mut messages);
+        }
+        let result = result?;
         let tokens = fmt_tokens(result.prompt_tokens, result.eval_tokens);
         let msg = result.message;
 
@@ -498,6 +582,26 @@ async fn run_model_turn(
             .unwrap_or("")
             .trim()
             .to_string();
+
+        if step == 0
+            && !routing_escalated
+            && tool_ctx.used_subset
+            && tool_calls.is_empty()
+            && content.is_empty()
+        {
+            routing_escalated = true;
+            tool_ctx = {
+                let reg = state.mcp.read().await;
+                reg.full_tool_context()
+            };
+            state
+                .emit_log(
+                    "tool_ctx",
+                    &format!("escalate full catalog ({} tools)", tool_ctx.active_count),
+                )
+                .await;
+            continue;
+        }
 
         if let Some(arr) = messages.as_array_mut() {
             arr.push(msg);
@@ -535,6 +639,9 @@ async fn run_model_turn(
                 })
                 .collect()
         };
+
+        let invoked_names: Vec<String> = prepared.iter().map(|(n, _)| n.clone()).collect();
+        state.note_tools_used(&invoked_names).await;
 
         let t0 = Instant::now();
         let mut handles = Vec::with_capacity(prepared.len());
@@ -612,9 +719,16 @@ async fn run_model_turn(
             { "role": "user", "content": format!("{user_message}\n\nData:\n{data}") }
         ]);
 
+        let summary_opts = ChatOptions {
+            think: Some(false),
+            num_predict: Some(SUMMARY_NUM_PREDICT),
+            temperature: Some(SUMMARY_TEMPERATURE),
+            format: Some(ollama::summarize_reply_json_schema()),
+            ..ChatOptions::default()
+        };
         let t0 = Instant::now();
         let result =
-            ollama::chat_with_tools(&model, &summary_messages, &json!([]), &chat_opts).await?;
+            ollama::chat_with_tools(&model, &summary_messages, &json!([]), &summary_opts).await?;
         let tokens = fmt_tokens(result.prompt_tokens, result.eval_tokens);
         state
             .emit_log(

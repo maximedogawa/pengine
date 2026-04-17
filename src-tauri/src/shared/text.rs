@@ -42,6 +42,155 @@ pub fn strip_think(s: &str) -> String {
     out.trim().to_string()
 }
 
+/// First lines of the system prompt so the format rule sits in the KV-cache prefix.
+pub const PENGINE_OUTPUT_CONTRACT_LEAD: &str = "[Pengine — output format; host parses this]\n\
+1) User-visible text: ONLY inside one <pengine_reply>...</pengine_reply> block (any language, markdown OK).\n\
+2) Private planning / English scratch: ONLY inside <pengine_plan>...</pengine_plan> (optional; host deletes it).\n\
+3) No user-facing sentences outside <pengine_reply>. After tool results, write the answer immediately in <pengine_reply>.\n\
+Example: <pengine_plan>scan forecast</pengine_plan><pengine_reply>Morgen in X: kurz und freundlich.</pengine_reply>\n\n";
+
+/// Injected as an extra system message immediately before the post-tool model call only.
+pub const PENGINE_POST_TOOL_REMINDER: &str = "\
+You have tool output. Respond in the user's language. REQUIRED: put ONLY the user-visible answer inside \
+<pengine_reply>...</pengine_reply>. Put any English reasoning ONLY inside <pengine_plan>...</pengine_plan>. \
+Do not write plain paragraphs outside those tags.";
+
+fn looks_like_english_scratchpad(s: &str) -> bool {
+    s.contains("Okay, let's")
+        || s.contains("Okay, let me")
+        || s.contains("The user asked")
+        || s.contains("Wait, the user")
+        || s.contains("the user's query")
+        || s.contains("Let me check")
+        || s.contains("I need to check")
+        || s.matches("Wait,").count() >= 2
+}
+
+/// When the model ignores `<pengine_reply>` but dumps English chain-of-thought, keep the tail that
+/// usually starts the real answer. Used only as a last resort after tag parsing fails.
+fn strip_plain_scratchpad_fallback(s: &str) -> String {
+    let s = s.trim();
+    if s.is_empty() || !looks_like_english_scratchpad(s) {
+        return s.to_string();
+    }
+
+    let markers = [
+        "\n\nMorgen (",
+        "\nMorgen (",
+        "\n\nMorgen in ",
+        "\nMorgen in ",
+        "\n\n**Morgen",
+        "\n**Morgen",
+        "\n\nHeute in ",
+        "\nHeute in ",
+        "\n\nTomorrow in ",
+        "\nTomorrow in ",
+        "\n\nThe answer is ",
+    ];
+    let mut best: Option<usize> = None;
+    for m in markers {
+        if let Some(i) = s.rfind(m) {
+            if i >= 40 {
+                best = Some(best.map_or(i, |j| j.max(i)));
+            }
+        }
+    }
+    if let Some(i) = s.rfind("Morgen in ") {
+        if i >= 80 {
+            best = Some(best.map_or(i, |j| j.max(i)));
+        }
+    }
+    if let Some(i) = s.rfind("Morgen (") {
+        if i >= 80 {
+            best = Some(best.map_or(i, |j| j.max(i)));
+        }
+    }
+
+    if let Some(i) = best {
+        return s[i..].trim_start().to_string();
+    }
+
+    s.to_string()
+}
+
+/// Drop paired XML/HTML-style blocks iteratively.
+fn strip_tag_pair(s: &str, open: &str, close: &str) -> String {
+    if open.is_empty() || close.is_empty() {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some((before, after_open)) = rest.split_once(open) {
+        out.push_str(before);
+        match after_open.split_once(close) {
+            Some((_, tail)) => rest = tail,
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_all_named_blocks(s: &str, tag: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut out = s.to_string();
+    loop {
+        let next = strip_tag_pair(&out, &open, &close);
+        if next == out {
+            return next.trim().to_string();
+        }
+        out = next;
+    }
+}
+
+/// Inner text of the last complete `<tag>…</tag>` pair (models sometimes emit a draft then a final block).
+fn last_tag_inner(s: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut last = None;
+    let mut search = s;
+    while let Some(start) = search.find(&open) {
+        let after_open = &search[start + open.len()..];
+        if let Some(end) = after_open.find(&close) {
+            last = Some(after_open[..end].trim().to_string());
+            search = &after_open[end + close.len()..];
+        } else {
+            break;
+        }
+    }
+    last
+}
+
+fn parse_json_reply_field(content: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(content.trim()).ok()?;
+    Some(v.get("reply")?.as_str()?.trim().to_string())
+}
+
+/// Normalize `message.content` from Ollama: template reasoning tags, optional
+/// `<pengine_reply>`, or JSON `{"reply":"…"}` when `json_object_reply` is true.
+pub fn normalize_assistant_message_content(raw: &str, json_object_reply: bool) -> String {
+    if json_object_reply {
+        if let Some(reply) = parse_json_reply_field(raw) {
+            return reply;
+        }
+    }
+
+    let s = strip_think(raw);
+    let s = strip_tag_pair(&s, concat!("<", "think", ">"), concat!("</", "think", ">"));
+
+    if let Some(inner) = last_tag_inner(&s, "pengine_reply") {
+        return inner;
+    }
+
+    let without_plan = strip_all_named_blocks(&s, "pengine_plan");
+    let t = without_plan.trim().to_string();
+    strip_plain_scratchpad_fallback(&t)
+}
+
 /// Strip ANSI escape sequences (CSI + OSC) and collapse runs of blank lines.
 ///
 /// Tool fetches like `wttr.in` return colored terminal output; the ANSI bytes
@@ -224,6 +373,47 @@ mod tests {
         // tag for any other purpose.
         let s = "The `</think>` tag terminates a reasoning block.";
         assert_eq!(strip_think(s), "` tag terminates a reasoning block.");
+    }
+
+    #[test]
+    fn normalize_assistant_prefers_pengine_reply() {
+        let s = "<pengine_plan>notes</pengine_plan><pengine_reply>Hello</pengine_reply>";
+        assert_eq!(normalize_assistant_message_content(s, false), "Hello");
+    }
+
+    #[test]
+    fn normalize_assistant_last_reply_block_wins() {
+        let s = "<pengine_reply>draft</pengine_reply> x <pengine_reply>final</pengine_reply>";
+        assert_eq!(normalize_assistant_message_content(s, false), "final");
+    }
+
+    #[test]
+    fn normalize_assistant_strips_plan_only_when_no_reply_tag() {
+        let s = "<pengine_plan>secret</pengine_plan>\nvisible";
+        assert_eq!(normalize_assistant_message_content(s, false), "visible");
+    }
+
+    #[test]
+    fn normalize_assistant_json_reply_mode() {
+        let s = r#"{"reply":"Done."}"#;
+        assert_eq!(normalize_assistant_message_content(s, true), "Done.");
+    }
+
+    #[test]
+    fn normalize_assistant_think_then_reply_tag() {
+        let s = "<think>x</think><pengine_reply>ok</pengine_reply>";
+        assert_eq!(normalize_assistant_message_content(s, false), "ok");
+    }
+
+    #[test]
+    fn normalize_assistant_fallback_strips_english_scratchpad_before_morgen() {
+        let pad = "Okay, let's see. The user asked for weather.\n\n";
+        let answer = "Morgen in Breitenau: sonnig.";
+        let combined = format!("{pad}{answer}");
+        assert_eq!(
+            normalize_assistant_message_content(&combined, false),
+            answer
+        );
     }
 
     #[test]
