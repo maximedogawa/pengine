@@ -1,5 +1,6 @@
 use crate::modules::memory::{self, MemoryProvider, SessionCommand};
 use crate::modules::ollama::service as ollama;
+use crate::modules::skills::service as skills;
 use crate::modules::tool_engine::service::workspace_app_bind_pairs;
 use crate::shared::state::{AppState, MemorySession};
 use chrono::Utc;
@@ -338,9 +339,10 @@ async fn run_model_turn(state: &AppState, user_message: &str) -> Result<TurnResu
         } else {
             String::new()
         };
+        let skills_hint = skills::skills_prompt_hint(&state.store_path);
         format!(
             "Helpful assistant with tools. Call a tool ONLY when you need external data. \
-             After tool results, answer immediately. Be concise.{fs_hint}{mem_hint}"
+             After tool results, answer immediately. Be concise.{fs_hint}{mem_hint}{skills_hint}"
         )
     } else {
         "Answer concisely.".to_string()

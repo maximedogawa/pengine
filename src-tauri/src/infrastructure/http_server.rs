@@ -2,8 +2,11 @@ use crate::infrastructure::bot_lifecycle;
 use crate::modules::bot::{repository, service as bot_service};
 use crate::modules::mcp::service as mcp_service;
 use crate::modules::ollama::service as ollama_service;
+use crate::modules::skills::service as skills_service;
+use crate::modules::skills::types::{ClawHubSkill, Skill};
 use crate::modules::tool_engine::{runtime as te_runtime, service as te_service};
 use crate::shared::state::{AppState, ConnectionData};
+use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Json, Sse};
@@ -114,6 +117,15 @@ pub async fn start_server(state: AppState) {
         .route(
             "/v1/toolengine/custom/{key}",
             delete(handle_toolengine_custom_remove),
+        )
+        .route("/v1/skills", get(handle_skills_list))
+        .route("/v1/skills", post(handle_skills_add))
+        .route("/v1/skills/{slug}", delete(handle_skills_delete))
+        .route("/v1/skills/{slug}/enabled", put(handle_skills_set_enabled))
+        .route("/v1/skills/clawhub", get(handle_skills_clawhub_search))
+        .route(
+            "/v1/skills/clawhub/install",
+            post(handle_skills_clawhub_install),
         )
         .layer(cors)
         .with_state(state.clone());
@@ -1226,6 +1238,116 @@ async fn handle_toolengine_custom_remove(
         }
     });
 
+    Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))))
+}
+
+#[derive(Serialize)]
+pub struct SkillsListResponse {
+    pub skills: Vec<Skill>,
+    pub custom_dir: String,
+}
+
+#[derive(Deserialize)]
+pub struct AddSkillBody {
+    pub slug: String,
+    pub markdown: String,
+}
+
+#[derive(Serialize)]
+pub struct ClawHubSearchResponseDto {
+    pub results: Vec<ClawHubSkill>,
+}
+
+#[derive(Deserialize)]
+pub struct ClawHubSearchQuery {
+    #[serde(default)]
+    pub q: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ClawHubInstallBody {
+    pub slug: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetSkillEnabledBody {
+    pub enabled: bool,
+}
+
+async fn handle_skills_list(State(state): State<AppState>) -> Json<SkillsListResponse> {
+    let skills = skills_service::list_skills(&state.store_path);
+    let custom_dir = skills_service::custom_skills_dir(&state.store_path)
+        .to_string_lossy()
+        .to_string();
+    Json(SkillsListResponse { skills, custom_dir })
+}
+
+async fn handle_skills_add(
+    State(state): State<AppState>,
+    Json(body): Json<AddSkillBody>,
+) -> Result<(StatusCode, Json<Skill>), (StatusCode, Json<ErrorResponse>)> {
+    let skill = skills_service::write_custom_skill(&state.store_path, &body.slug, &body.markdown)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
+    state
+        .emit_log("skills", &format!("custom skill '{}' saved", skill.slug))
+        .await;
+    Ok((StatusCode::OK, Json(skill)))
+}
+
+async fn handle_skills_delete(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    skills_service::delete_custom_skill(&state.store_path, &slug)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
+    state
+        .emit_log("skills", &format!("custom skill '{slug}' removed"))
+        .await;
+    Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))))
+}
+
+async fn handle_skills_clawhub_search(
+    Query(params): Query<ClawHubSearchQuery>,
+) -> Result<Json<ClawHubSearchResponseDto>, (StatusCode, Json<ErrorResponse>)> {
+    let q = params.q.unwrap_or_default();
+    let results = skills_service::search_clawhub(&q)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(ErrorResponse { error: e })))?;
+    Ok(Json(ClawHubSearchResponseDto { results }))
+}
+
+async fn handle_skills_clawhub_install(
+    State(state): State<AppState>,
+    Json(body): Json<ClawHubInstallBody>,
+) -> Result<(StatusCode, Json<Skill>), (StatusCode, Json<ErrorResponse>)> {
+    let skill = skills_service::install_clawhub_skill(&state.store_path, &body.slug)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, Json(ErrorResponse { error: e })))?;
+    state
+        .emit_log(
+            "skills",
+            &format!("installed ClawHub skill '{}'", skill.slug),
+        )
+        .await;
+    Ok((StatusCode::OK, Json(skill)))
+}
+
+async fn handle_skills_set_enabled(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Json(body): Json<SetSkillEnabledBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    skills_service::set_skill_enabled(&state.store_path, &slug, body.enabled)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
+    state
+        .emit_log(
+            "skills",
+            &format!(
+                "skill '{slug}' {}",
+                if body.enabled { "enabled" } else { "disabled" }
+            ),
+        )
+        .await;
     Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))))
 }
 
