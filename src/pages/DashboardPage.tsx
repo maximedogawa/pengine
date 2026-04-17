@@ -5,6 +5,7 @@ import { TerminalPreview } from "../modules/bot/components/TerminalPreview";
 import { useAppSessionStore } from "../modules/bot/store/appSessionStore";
 import { McpToolsPanel } from "../modules/mcp/components/McpToolsPanel";
 import { fetchOllamaModels, setPreferredOllamaModel } from "../modules/ollama/api";
+import { SkillsPanel } from "../modules/skills";
 import { ToolEnginePanel } from "../modules/toolengine/components/ToolEnginePanel";
 import { TopMenu } from "../shared/ui/TopMenu";
 
@@ -216,6 +217,11 @@ export function DashboardPage() {
         {/* ── Tool Engine (container tools) ───────────────────────── */}
         <section className="mt-4 sm:mt-6">
           <ToolEnginePanel />
+        </section>
+
+        {/* ── Skills (README-only context templates) ──────────────── */}
+        <section className="mt-4 sm:mt-6">
+          <SkillsPanel />
         </section>
       </main>
     </div>
