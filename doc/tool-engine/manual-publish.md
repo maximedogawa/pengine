@@ -79,20 +79,20 @@ After a successful push, get the digest:
 podman image inspect "${IMAGE}:${VERSION}" --format '{{index .RepoDigests 0}}'
 ```
 
-Update the `sha256:…` value in the matching `versions[]` entry in **`tools/mcp-tools.json`**. The app fetches this file from GitHub at runtime; the embedded `src-tauri/src/modules/tool_engine/tools.json` is the offline fallback.
+Update the `sha256:…` value in the matching `versions[]` entry in **`tools/mcp-tools.json`**. The app fetches this file from GitHub at runtime and embeds the same file at compile time as the offline fallback.
 
 ---
 
-## Updating upstream npm versions
+## Updating upstream npm and PyPI versions
 
-Run the update script (like `npm update` for tool images):
+Run the update script (like `npm update` / PyPI bump for tool images):
 
 ```bash
 ./tools/update-upstream.sh              # check all tools
 ./tools/update-upstream.sh file-manager # check one tool
 ```
 
-This checks the npm registry for newer versions, bumps `mcp-tools.json`, and prints a summary. Commit, push, and CI builds only the affected tools.
+`./tools/update-upstream.sh` checks the **npm** registry for tools that declare `upstream_mcp_npm` and the **PyPI** registry for tools that declare `upstream_mcp_pypi`, bumps `mcp-tools.json` when a newer version exists, and prints a summary. Commit, push, and CI builds only the affected tools. In PR descriptions, note that the script may have changed either npm or PyPI pins (or both) depending on the tool.
 
 ---
 
@@ -132,8 +132,7 @@ CI passes these as `docker build` args so you bump the npm version in the regist
 
 ## Files
 
-- **`tools/mcp-tools.json`** — tool registry (all tools, versions, digests, npm). CI and the app read this.
+- **`tools/mcp-tools.json`** — single-source tool registry (all tools, versions, digests, upstream). CI, the app at runtime, and the embedded offline fallback (`include_str!`) all read this file.
 - **`tools/<slug>/Dockerfile`** — image build context.
-- **`tools/update-upstream.sh`** — bump upstream npm versions (like `npm update`).
-- **`src-tauri/src/modules/tool_engine/tools.json`** — embedded catalog (offline fallback). Update after publish.
+- **`tools/update-upstream.sh`** — bump upstream **npm** and **PyPI** package versions (registry checks for each tool’s ecosystem).
 - **`.github/workflows/tools-publish.yml`** — CI workflow.

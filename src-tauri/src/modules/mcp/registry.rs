@@ -111,10 +111,10 @@ impl Provider {
         }
     }
 
-    pub fn tools(&self) -> &[ToolDef] {
+    pub fn tools(&self) -> Vec<ToolDef> {
         match self {
-            Provider::Native(n) => &n.tools,
-            Provider::Mcp(c) => &c.tools,
+            Provider::Native(n) => n.tools.clone(),
+            Provider::Mcp(c) => c.tools(),
         }
     }
 
@@ -147,7 +147,7 @@ impl ToolRegistry {
         let cached_ollama_tools = build_ollama_tools(&providers);
         let cached_tool_names = providers
             .iter()
-            .flat_map(|p| p.tools().iter())
+            .flat_map(|p| p.tools())
             .filter(|t| !is_deprecated_mcp_tool(t))
             .map(|t| t.name.clone())
             .collect();
@@ -161,9 +161,8 @@ impl ToolRegistry {
     pub fn all_tools(&self) -> Vec<ToolDef> {
         self.providers
             .iter()
-            .flat_map(|p| p.tools().iter())
+            .flat_map(|p| p.tools())
             .filter(|t| !is_deprecated_mcp_tool(t))
-            .cloned()
             .collect()
     }
 
@@ -181,14 +180,36 @@ impl ToolRegistry {
         self.cached_tool_names.is_empty()
     }
 
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<(String, bool), String> {
-        let (provider, tool, direct) = self.resolve_tool(name)?;
-        let args = match &provider {
-            Provider::Mcp(c) if c.server_name == "te_pengine-file-manager" => {
+    /// Read-only access to the registered providers. Used by capability detectors
+    /// (e.g. `memory::MemoryProvider::detect`) that pick a server by its tool shape.
+    pub fn providers(&self) -> &[Provider] {
+        &self.providers
+    }
+
+    fn normalize_tool_args_for_provider(provider: &Provider, args: Value) -> Value {
+        match provider {
+            Provider::Mcp(c) if is_pengine_file_manager_server_key(c.server_name.as_str()) => {
                 normalize_file_manager_tool_args(args)
             }
             _ => args,
-        };
+        }
+    }
+
+    /// Resolve a tool and rewrite arguments (e.g. File Manager `/mcp/...` → `/app/...`).
+    /// Call [`Provider::call_tool`] with the returned name and args **after** releasing any lock on this registry.
+    pub fn prepare_tool_invocation(
+        &self,
+        name: &str,
+        args: Value,
+    ) -> Result<(Provider, String, bool, Value), String> {
+        let (provider, tool, direct) = self.resolve_tool(name)?;
+        let args = Self::normalize_tool_args_for_provider(&provider, args);
+        Ok((provider, tool, direct, args))
+    }
+
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<(String, bool), String> {
+        let (provider, tool, direct) = self.resolve_tool(name)?;
+        let args = Self::normalize_tool_args_for_provider(&provider, args);
         let text = provider.call_tool(&tool, args).await?;
         Ok((text, direct))
     }
@@ -200,17 +221,17 @@ impl ToolRegistry {
         };
 
         if server.is_none() {
-            let mut found: Vec<(&Provider, &ToolDef)> = Vec::new();
+            let mut found: Vec<(Provider, ToolDef)> = Vec::new();
             for provider in &self.providers {
-                if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
-                    found.push((provider, def));
+                if let Some(def) = provider.tools().into_iter().find(|t| t.name == tool) {
+                    found.push((provider.clone(), def));
                 }
             }
             return match found.len() {
                 0 => Err(format!("tool not found: {name}")),
                 1 => {
-                    let (p, d) = found[0];
-                    Ok((p.clone(), tool.to_string(), d.direct_return))
+                    let (p, d) = found.into_iter().next().expect("len 1");
+                    Ok((p, tool.to_string(), d.direct_return))
                 }
                 _ => {
                     let servers: Vec<_> = found.iter().map(|(p, _)| p.server_name()).collect();
@@ -228,13 +249,18 @@ impl ToolRegistry {
                 if !provider.server_name().eq_ignore_ascii_case(key) {
                     continue;
                 }
-                if let Some(def) = provider.tools().iter().find(|t| t.name == tool) {
+                if let Some(def) = provider.tools().into_iter().find(|t| t.name == tool) {
                     return Ok((provider.clone(), tool.to_string(), def.direct_return));
                 }
             }
         }
         Err(format!("tool not found: {name}"))
     }
+}
+
+/// `mcp.json` key for the catalog tool `pengine/file-manager` (same formula as `tool_engine::server_key`).
+fn is_pengine_file_manager_server_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("te_pengine-file-manager")
 }
 
 /// Hide tools the server marks as deprecated (e.g. filesystem `read_file` → use `read_text_file`).
@@ -246,10 +272,29 @@ fn is_deprecated_mcp_tool(tool: &ToolDef) -> bool {
         .contains("DEPRECATED")
 }
 
+/// Strip `"description"` keys from nested property objects inside a JSON Schema to reduce
+/// token count. Keeps `type`, `properties`, `required`, `enum`, `items`, `default`, etc.
+fn compact_schema(schema: &Value) -> Value {
+    match schema {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                if k == "description" {
+                    continue;
+                }
+                out.insert(k.clone(), compact_schema(v));
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(compact_schema).collect()),
+        other => other.clone(),
+    }
+}
+
 fn build_ollama_tools(providers: &[Provider]) -> Value {
     let arr: Vec<Value> = providers
         .iter()
-        .flat_map(|p| p.tools().iter())
+        .flat_map(|p| p.tools())
         .filter(|t| !is_deprecated_mcp_tool(t))
         .map(|t| {
             json!({
@@ -257,7 +302,7 @@ fn build_ollama_tools(providers: &[Provider]) -> Value {
                 "function": {
                     "name": t.name,
                     "description": t.description.clone().unwrap_or_default(),
-                    "parameters": t.input_schema,
+                    "parameters": compact_schema(&t.input_schema),
                 }
             })
         })
@@ -300,5 +345,36 @@ mod tests {
         let raw = json!({ "path": "pengine/readme.md" });
         let out = normalize_file_manager_tool_args(raw);
         assert_eq!(out["path"], "/app/pengine/readme.md");
+    }
+
+    #[test]
+    fn compact_schema_strips_descriptions() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The file path to read"
+                },
+                "encoding": {
+                    "type": "string",
+                    "description": "Character encoding",
+                    "enum": ["utf-8", "ascii"]
+                }
+            },
+            "required": ["path"]
+        });
+        let compact = compact_schema(&schema);
+        assert_eq!(compact["type"], "object");
+        assert_eq!(compact["required"], json!(["path"]));
+        assert!(compact["properties"]["path"].get("description").is_none());
+        assert_eq!(compact["properties"]["path"]["type"], "string");
+        assert!(compact["properties"]["encoding"]
+            .get("description")
+            .is_none());
+        assert_eq!(
+            compact["properties"]["encoding"]["enum"],
+            json!(["utf-8", "ascii"])
+        );
     }
 }

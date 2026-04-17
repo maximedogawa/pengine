@@ -13,6 +13,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Socket, Type};
 use std::convert::Infallible;
+use std::io::ErrorKind;
 use std::time::Duration;
 use tokio_stream::{Stream, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
@@ -103,6 +104,10 @@ pub async fn start_server(state: AppState) {
         .route(
             "/v1/toolengine/uninstall",
             post(handle_toolengine_uninstall),
+        )
+        .route(
+            "/v1/toolengine/private-folder",
+            put(handle_toolengine_private_folder_put),
         )
         .route("/v1/toolengine/custom", get(handle_toolengine_custom_list))
         .route("/v1/toolengine/custom", post(handle_toolengine_custom_add))
@@ -379,11 +384,21 @@ async fn handle_mcp_filesystem_put(
         mcp_service::set_filesystem_allowed_paths(&mut cfg, &paths);
 
         let mut note = None::<String>;
+        let bot_id = state
+            .connection
+            .lock()
+            .await
+            .as_ref()
+            .map(|c| c.bot_id.clone());
         match &catalog_result {
             Ok(cat) => {
-                if let Err(e) =
-                    te_service::sync_workspace_mounted_tools_for_catalog(&mut cfg, &paths, cat)
-                {
+                if let Err(e) = te_service::sync_workspace_mounted_tools_for_catalog(
+                    &mut cfg,
+                    &paths,
+                    cat,
+                    &state.mcp_config_path,
+                    bot_id,
+                ) {
                     note = Some(e);
                 }
             }
@@ -483,6 +498,34 @@ fn is_valid_server_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// True when two stdio entries launch the same process/bind mounts; differs only in fields we can
+/// patch without spawning a new stdio child (e.g. `direct_return`).
+fn mcp_stdio_identity_ignores_direct_return(
+    old: &crate::modules::mcp::types::ServerEntry,
+    new: &crate::modules::mcp::types::ServerEntry,
+) -> bool {
+    use crate::modules::mcp::types::ServerEntry;
+    match (old, new) {
+        (
+            ServerEntry::Stdio {
+                command: c0,
+                args: a0,
+                env: e0,
+                private_host_path: p0,
+                ..
+            },
+            ServerEntry::Stdio {
+                command: c1,
+                args: a1,
+                env: e1,
+                private_host_path: p1,
+                ..
+            },
+        ) => c0 == c1 && a0 == a1 && e0 == e1 && p0 == p1,
+        _ => false,
+    }
+}
+
 async fn handle_mcp_server_upsert(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -509,7 +552,7 @@ async fn handle_mcp_server_upsert(
         }
     }
 
-    {
+    let old_entry = {
         let _guard = state.mcp_config_mutex.lock().await;
         let mut cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
             (
@@ -518,7 +561,12 @@ async fn handle_mcp_server_upsert(
             )
         })?;
 
-        cfg.servers.insert(name.clone(), entry);
+        let old = cfg.servers.get(&name).cloned();
+        if old.as_ref() == Some(&entry) {
+            return Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))));
+        }
+
+        cfg.servers.insert(name.clone(), entry.clone());
 
         mcp_service::save_config(&state.mcp_config_path, &cfg).map_err(|e| {
             (
@@ -526,14 +574,51 @@ async fn handle_mcp_server_upsert(
                 Json(ErrorResponse { error: e }),
             )
         })?;
-    }
+
+        old
+    };
+
+    let try_direct_patch = match (&old_entry, &entry) {
+        (Some(old_e), new_e) if mcp_stdio_identity_ignores_direct_return(old_e, new_e) => {
+            matches!(
+                (old_e, new_e),
+                (
+                    crate::modules::mcp::types::ServerEntry::Stdio {
+                        direct_return: a,
+                        ..
+                    },
+                    crate::modules::mcp::types::ServerEntry::Stdio {
+                        direct_return: b,
+                        ..
+                    },
+                ) if a != b
+            )
+        }
+        _ => false,
+    };
+
+    let patch_direct_return = match &entry {
+        crate::modules::mcp::types::ServerEntry::Stdio { direct_return, .. } => *direct_return,
+        _ => false,
+    };
 
     state
         .emit_log("mcp", &format!("server '{name}' saved"))
         .await;
 
     let bg = state.clone();
+    let name_bg = name.clone();
     tokio::spawn(async move {
+        if try_direct_patch
+            && mcp_service::patch_stdio_direct_return_in_registry(
+                &bg,
+                &name_bg,
+                patch_direct_return,
+            )
+            .await
+        {
+            return;
+        }
         if let Err(e) = mcp_service::rebuild_registry_into_state(&bg).await {
             bg.emit_log(
                 "mcp",
@@ -621,10 +706,25 @@ async fn handle_toolengine_catalog(
 
     let installed_ids = te_service::installed_tool_ids(&state.mcp_config_path);
 
+    let cfg_snap = state
+        .mcp_config_path
+        .exists()
+        .then(|| mcp_service::read_config(&state.mcp_config_path).ok())
+        .flatten();
+
     let tools: Vec<serde_json::Value> = catalog
         .tools
         .iter()
         .map(|t| {
+            let stored_pf = cfg_snap.as_ref().and_then(|c| {
+                let k = te_service::server_key(&t.id);
+                match c.servers.get(&k)? {
+                    crate::modules::mcp::types::ServerEntry::Stdio {
+                        private_host_path, ..
+                    } => private_host_path.as_deref(),
+                    _ => None,
+                }
+            });
             let commands: Vec<serde_json::Value> = t
                 .commands
                 .iter()
@@ -635,6 +735,18 @@ async fn handle_toolengine_catalog(
                     })
                 })
                 .collect();
+            let private_folder_json = t.private_folder.as_ref().map(|pf| {
+                serde_json::json!({
+                    "container_path": pf.container_path,
+                    "file_env_var": pf.file_env_var,
+                    "file_extension": pf.file_extension,
+                })
+            });
+            let private_host_resolved: Option<String> = t.private_folder.as_ref().map(|_| {
+                te_service::resolve_private_host_path(&state.mcp_config_path, &t.id, stored_pf)
+                    .to_string_lossy()
+                    .into_owned()
+            });
             serde_json::json!({
                 "id": t.id,
                 "name": t.name,
@@ -642,6 +754,8 @@ async fn handle_toolengine_catalog(
                 "description": t.description,
                 "installed": installed_ids.contains(&t.id),
                 "commands": commands,
+                "private_folder": private_folder_json,
+                "private_host_path": private_host_resolved,
             })
         })
         .collect();
@@ -657,6 +771,12 @@ async fn handle_toolengine_installed(State(state): State<AppState>) -> Json<serd
 #[derive(Deserialize)]
 struct ToolEngineActionBody {
     tool_id: String,
+}
+
+#[derive(Deserialize)]
+struct PutToolPrivateFolderBody {
+    tool_id: String,
+    path: String,
 }
 
 async fn handle_toolengine_install(
@@ -717,6 +837,159 @@ async fn handle_toolengine_install(
             bg.emit_log(
                 "mcp",
                 &format!("ERROR: MCP registry rebuild failed after tool install: {e}"),
+            )
+            .await;
+        }
+    });
+
+    Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))))
+}
+
+async fn handle_toolengine_private_folder_put(
+    State(state): State<AppState>,
+    Json(body): Json<PutToolPrivateFolderBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    let tool_id = body.tool_id.trim().to_string();
+    let path = body.path.trim().to_string();
+    if tool_id.is_empty() || path.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "tool_id and path are required".into(),
+            }),
+        ));
+    }
+
+    let catalog = te_service::load_catalog().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e }),
+        )
+    })?;
+
+    let entry = catalog
+        .tools
+        .iter()
+        .find(|t| t.id == tool_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("unknown tool '{tool_id}'"),
+                }),
+            )
+        })?;
+
+    if entry.private_folder.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "this catalog tool does not declare private_folder".into(),
+            }),
+        ));
+    }
+
+    if !std::path::Path::new(&path).is_absolute() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "path must be an absolute host directory".into(),
+            }),
+        ));
+    }
+
+    let bot_id = state
+        .connection
+        .lock()
+        .await
+        .as_ref()
+        .map(|c| c.bot_id.clone());
+
+    {
+        let _guard = state.mcp_config_mutex.lock().await;
+        let mut cfg = mcp_service::load_or_init_config(&state.mcp_config_path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e }),
+            )
+        })?;
+
+        let key = te_service::server_key(&tool_id);
+        {
+            let Some(server_ent) = cfg.servers.get_mut(&key) else {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("tool '{tool_id}' is not installed"),
+                    }),
+                ));
+            };
+            match server_ent {
+                crate::modules::mcp::types::ServerEntry::Stdio {
+                    private_host_path, ..
+                } => {
+                    if let Err(e) = tokio::fs::create_dir_all(&path).await {
+                        let status = match e.kind() {
+                            ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
+                            ErrorKind::AlreadyExists => StatusCode::CONFLICT,
+                            _ => StatusCode::INTERNAL_SERVER_ERROR,
+                        };
+                        return Err((
+                            status,
+                            Json(ErrorResponse {
+                                error: format!("cannot create directory: {e}"),
+                            }),
+                        ));
+                    }
+                    *private_host_path = Some(path.clone());
+                }
+                _ => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "tool server entry is not stdio".into(),
+                        }),
+                    ));
+                }
+            }
+        }
+
+        let host_paths = mcp_service::filesystem_allowed_paths(&cfg);
+        te_service::sync_workspace_mounted_tools_for_catalog(
+            &mut cfg,
+            &host_paths,
+            &catalog,
+            &state.mcp_config_path,
+            bot_id,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e }),
+            )
+        })?;
+
+        mcp_service::save_config(&state.mcp_config_path, &cfg).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e }),
+            )
+        })?;
+    }
+
+    state
+        .emit_log(
+            "toolengine",
+            &format!("private data folder for {tool_id} set to {path}"),
+        )
+        .await;
+
+    let bg = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = mcp_service::rebuild_registry_into_state(&bg).await {
+            bg.emit_log(
+                "mcp",
+                &format!("ERROR: MCP registry rebuild failed after private-folder update: {e}"),
             )
             .await;
         }

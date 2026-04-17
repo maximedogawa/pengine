@@ -12,6 +12,12 @@ export type CatalogToolCommand = {
   description: string;
 };
 
+export type PrivateFolderConfig = {
+  container_path: string;
+  file_env_var: string;
+  file_extension: string;
+};
+
 export type CatalogTool = {
   id: string;
   name: string;
@@ -19,6 +25,8 @@ export type CatalogTool = {
   description: string;
   installed: boolean;
   commands: CatalogToolCommand[];
+  private_folder?: PrivateFolderConfig | null;
+  private_host_path?: string | null;
 };
 
 function makeTimeoutSignal(timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
@@ -37,7 +45,21 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Tauri starts the loopback API in a spawned task; the webview may load first. Brief retries avoid a false "offline" flash. */
+async function parseApiError(resp: Response): Promise<string> {
+  const raw = await resp.text();
+  let message = `Request failed (HTTP ${resp.status})`;
+  try {
+    const body = JSON.parse(raw) as { error?: string };
+    message = body.error ?? raw.trim();
+  } catch {
+    message = raw.trim() || message;
+  }
+  if (!message) {
+    message = `Request failed (HTTP ${resp.status})`;
+  }
+  return message;
+}
+
 async function fetchOkWithRetry(
   url: string,
   init: RequestInit | undefined,
@@ -59,7 +81,6 @@ async function fetchOkWithRetry(
   return null;
 }
 
-/** GET `/v1/toolengine/runtime` — container runtime detection status. */
 export async function fetchRuntimeStatus(timeoutMs = 3000): Promise<RuntimeStatus | null> {
   const resp = await fetchOkWithRetry(
     `${PENGINE_API_BASE}/v1/toolengine/runtime`,
@@ -74,7 +95,6 @@ export async function fetchRuntimeStatus(timeoutMs = 3000): Promise<RuntimeStatu
   }
 }
 
-/** GET `/v1/toolengine/catalog` — full tool catalog with installed flags. */
 export async function fetchToolCatalog(timeoutMs = 5000): Promise<CatalogTool[] | null> {
   const resp = await fetchOkWithRetry(
     `${PENGINE_API_BASE}/v1/toolengine/catalog`,
@@ -90,10 +110,8 @@ export async function fetchToolCatalog(timeoutMs = 5000): Promise<CatalogTool[] 
   }
 }
 
-/** POST `/v1/toolengine/install` — pull + verify a whitelisted container image. */
 export async function installTool(
   toolId: string,
-  /** Large image pulls on slow links can exceed a few minutes. */
   timeoutMs = 900_000,
 ): Promise<{ ok: boolean; error?: string }> {
   const { signal, cleanup } = makeTimeoutSignal(timeoutMs);
@@ -105,15 +123,7 @@ export async function installTool(
       signal,
     });
     if (resp.ok) return { ok: true };
-    const raw = await resp.text();
-    let message = `Request failed (HTTP ${resp.status})`;
-    try {
-      const body = JSON.parse(raw) as { error?: string };
-      message = body.error ?? raw.trim();
-    } catch {
-      message = raw.trim() || message;
-    }
-    return { ok: false, error: message };
+    return { ok: false, error: await parseApiError(resp) };
   } catch (e) {
     return { ok: false, error: fetchErrorMessage(e) };
   } finally {
@@ -121,7 +131,28 @@ export async function installTool(
   }
 }
 
-/** POST `/v1/toolengine/uninstall` — remove a container image. */
+export async function putToolPrivateFolder(
+  toolId: string,
+  path: string,
+  timeoutMs = 120_000,
+): Promise<{ ok: boolean; error?: string }> {
+  const { signal, cleanup } = makeTimeoutSignal(timeoutMs);
+  try {
+    const resp = await fetch(`${PENGINE_API_BASE}/v1/toolengine/private-folder`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool_id: toolId, path }),
+      signal,
+    });
+    if (resp.ok) return { ok: true };
+    return { ok: false, error: await parseApiError(resp) };
+  } catch (e) {
+    return { ok: false, error: fetchErrorMessage(e) };
+  } finally {
+    cleanup();
+  }
+}
+
 export async function uninstallTool(
   toolId: string,
   timeoutMs = 120_000,
@@ -135,15 +166,7 @@ export async function uninstallTool(
       signal,
     });
     if (resp.ok) return { ok: true };
-    const raw = await resp.text();
-    let message = `Request failed (HTTP ${resp.status})`;
-    try {
-      const body = JSON.parse(raw) as { error?: string };
-      message = body.error ?? raw.trim();
-    } catch {
-      message = raw.trim() || message;
-    }
-    return { ok: false, error: message };
+    return { ok: false, error: await parseApiError(resp) };
   } catch (e) {
     return { ok: false, error: fetchErrorMessage(e) };
   } finally {

@@ -17,7 +17,7 @@ pub struct McpConfig {
 }
 
 /// One logical MCP server. Same top-level shape for every backend: `type` picks the loader.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEntry {
     /// In-process tool pack; `id` selects a built-in (e.g. `dice`).
@@ -33,6 +33,10 @@ pub enum ServerEntry {
         /// sending them back to the model for summarisation.
         #[serde(default)]
         direct_return: bool,
+        /// For catalog tools that declare `private_folder`: the host directory currently mounted
+        /// into the container. Defaults to `$APP_DATA/tool-data/<slug>/`; user overrides land here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        private_host_path: Option<String>,
     },
 }
 

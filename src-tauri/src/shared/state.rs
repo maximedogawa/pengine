@@ -21,6 +21,13 @@ pub struct LogEntry {
     pub message: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct MemorySession {
+    pub entity_name: String,
+    pub turn_count: u32,
+    pub diary_only: bool,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub connection: Arc<Mutex<Option<ConnectionData>>>,
@@ -38,6 +45,8 @@ pub struct AppState {
     pub preferred_ollama_model: Arc<RwLock<Option<String>>>,
     pub cached_filesystem_paths: Arc<RwLock<Vec<String>>>,
     pub tool_engine_mutex: Arc<Mutex<()>>,
+    /// Active memory-session recording (toggled by keyword commands; see `bot::agent`).
+    pub memory_session: Arc<RwLock<Option<MemorySession>>>,
 }
 
 impl AppState {
@@ -58,6 +67,7 @@ impl AppState {
             preferred_ollama_model: Arc::new(RwLock::new(None)),
             cached_filesystem_paths: Arc::new(RwLock::new(Vec::new())),
             tool_engine_mutex: Arc::new(Mutex::new(())),
+            memory_session: Arc::new(RwLock::new(None)),
         }
     }
 

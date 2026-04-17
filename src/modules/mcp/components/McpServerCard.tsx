@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { fetchToolCatalog, putToolPrivateFolder } from "../../toolengine";
 import { workspaceAppContainerMountPaths } from "../../../shared/workspaceMounts";
 import {
   fetchMcpConfig,
@@ -7,6 +8,11 @@ import {
   type ServerEntry,
   type ServerEntryStdio,
 } from "..";
+
+/** `pengine/memory` → `te_pengine-memory` (matches Rust `server_key`). */
+function teServerKeyForToolId(toolId: string): string {
+  return `te_${toolId.replace(/\//g, "-")}`;
+}
 
 type Props = {
   name: string;
@@ -224,6 +230,13 @@ function InlineEditForm({
   const [teApplyError, setTeApplyError] = useState<string | null>(null);
   const [teApplyBusy, setTeApplyBusy] = useState(false);
 
+  /** Catalog tool id (e.g. `pengine/memory`) when this server uses `private_folder`. */
+  const [tePrivateToolId, setTePrivateToolId] = useState<string | null>(null);
+  const [tePrivatePathInput, setTePrivatePathInput] = useState("");
+  const [tePrivatePickError, setTePrivatePickError] = useState<string | null>(null);
+  const [tePrivateApplyError, setTePrivateApplyError] = useState<string | null>(null);
+  const [tePrivateApplyBusy, setTePrivateApplyBusy] = useState(false);
+
   useEffect(() => {
     if (!isTeFileManager) return;
     void (async () => {
@@ -231,6 +244,30 @@ function InlineEditForm({
       if (cfg) setTePaths([...cfg.filesystem_allowed_paths]);
     })();
   }, [isTeFileManager, name]);
+
+  useEffect(() => {
+    if (!name.startsWith("te_")) {
+      setTePrivateToolId(null);
+      setTePrivatePathInput("");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const cat = await fetchToolCatalog(5000);
+      if (cancelled) return;
+      const t = cat?.find((x) => teServerKeyForToolId(x.id) === name && x.private_folder != null);
+      if (t) {
+        setTePrivateToolId(t.id);
+        setTePrivatePathInput(t.private_host_path ?? "");
+      } else {
+        setTePrivateToolId(null);
+        setTePrivatePathInput("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
 
   const isFs = argsTextLooksLikeFilesystem(argsText);
 
@@ -327,9 +364,50 @@ function InlineEditForm({
     onCancel();
   };
 
+  const pickTePrivateFolder = async () => {
+    setTePrivatePickError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      try {
+        const picked = await invoke<string | null>("pick_mcp_filesystem_folder");
+        if (picked) setTePrivatePathInput(picked);
+      } catch (invokeErr) {
+        setTePrivatePickError(
+          invokeErr instanceof Error ? invokeErr.message : "Could not open folder picker",
+        );
+      }
+    } catch {
+      setTePrivatePickError("Folder picker needs the desktop app (Tauri).");
+    }
+  };
+
+  const applyTePrivateFolder = async () => {
+    if (!tePrivateToolId) return;
+    setTePrivateApplyError(null);
+    const path = tePrivatePathInput.trim();
+    if (!path) {
+      setTePrivateApplyError("Enter a host folder path or use Choose folder.");
+      return;
+    }
+    setTePrivateApplyBusy(true);
+    const result = await putToolPrivateFolder(tePrivateToolId, path, 120_000);
+    setTePrivateApplyBusy(false);
+    if (!result.ok) {
+      setTePrivateApplyError(result.error ?? "Could not save");
+      return;
+    }
+    await onReloadServers?.();
+    onCancel();
+  };
+
   // ── Submit ────────────────────────────────────────────────────────
 
+  const privatePathBaseline = entry.private_host_path ?? "";
+  const hasUnsavedPrivate =
+    tePrivateToolId != null && tePrivatePathInput.trim() !== privatePathBaseline.trim();
+
   const handleSubmit = async () => {
+    if (hasUnsavedPrivate || tePrivateApplyBusy) return;
     const args = argsText
       .split("\n")
       .map((l) => l.trim())
@@ -348,6 +426,7 @@ function InlineEditForm({
       args,
       env,
       direct_return: directReturn,
+      private_host_path: entry.private_host_path ?? null,
     });
   };
 
@@ -414,6 +493,54 @@ function InlineEditForm({
           </div>
         )}
 
+        {tePrivateToolId && (
+          <div className="rounded-lg border border-fuchsia-300/15 bg-fuchsia-300/5 p-3">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-fuchsia-200/80">
+              Private data folder (host)
+            </p>
+            <p className="mb-2 text-[11px] leading-snug text-(--mid)">
+              This tool keeps state on disk in a single host directory (bind-mounted into the
+              container). Use Choose folder or paste a path, then Apply — same idea as File
+              Manager&apos;s shared folders, but only for this tool&apos;s data file(s).
+            </p>
+            {tePrivatePickError && (
+              <p className="mb-2 font-mono text-[11px] text-rose-300/90" role="alert">
+                {tePrivatePickError}
+              </p>
+            )}
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={tePrivatePathInput}
+                onChange={(e) => setTePrivatePathInput(e.target.value)}
+                placeholder="/path/to/memory-data"
+                className="min-w-0 flex-1 rounded-md border border-white/15 bg-white/5 px-2 py-1.5 font-mono text-[11px] text-white outline-none placeholder:text-white/20 focus:border-white/30"
+              />
+              <button
+                type="button"
+                onClick={() => void pickTePrivateFolder()}
+                className="shrink-0 rounded-md border border-fuchsia-300/25 bg-fuchsia-300/10 px-2 py-1.5 font-mono text-[10px] text-fuchsia-100/90 hover:bg-fuchsia-300/20"
+                title="Choose folder (desktop only)"
+              >
+                Choose folder
+              </button>
+            </div>
+            {tePrivateApplyError && (
+              <p className="mt-2 font-mono text-[11px] text-rose-300" role="alert">
+                {tePrivateApplyError}
+              </p>
+            )}
+            <button
+              type="button"
+              disabled={tePrivateApplyBusy}
+              onClick={() => void applyTePrivateFolder()}
+              className="mt-3 rounded-lg border border-fuchsia-300/30 bg-fuchsia-300/15 px-3 py-1.5 font-mono text-[11px] text-fuchsia-100 hover:bg-fuchsia-300/25 disabled:opacity-40"
+            >
+              {tePrivateApplyBusy ? "Applying…" : "Apply data folder"}
+            </button>
+          </div>
+        )}
+
         {/* Filesystem folder helper (npx server-filesystem) */}
         {isFs && (
           <FolderHelper
@@ -471,15 +598,20 @@ function InlineEditForm({
           Direct return (skip model summary)
         </label>
       </div>
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          disabled={busy || !command.trim()}
-          onClick={handleSubmit}
+          disabled={busy || !command.trim() || hasUnsavedPrivate || tePrivateApplyBusy}
+          onClick={() => void handleSubmit()}
           className="rounded-lg border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/15 disabled:opacity-40"
         >
           Save
         </button>
+        {hasUnsavedPrivate ? (
+          <p className="font-mono text-[10px] text-amber-200/90">
+            Apply data folder first (or revert the path field) before Save.
+          </p>
+        ) : null}
         <button
           type="button"
           onClick={onCancel}
