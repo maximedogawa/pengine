@@ -7,9 +7,12 @@ use teloxide::types::{ChatAction, ChatId, Me};
 use teloxide::utils::command::BotCommands;
 use tokio::sync::Notify;
 
-/// Telegram's per-message hard limit is 4096 characters. Leave headroom so we
-/// never land on the edge after whitespace trims.
-const TELEGRAM_CHUNK_BUDGET: usize = 4000;
+/// Telegram's per-message hard limit is 4096 **UTF-16 code units**, not Unicode
+/// scalars: one emoji outside the BMP counts as 2 code units. `split_by_chars`
+/// counts Rust `char`s, so we halve the budget to stay safe even for messages
+/// that are entirely supplementary characters. 2000 * 2 = 4000 UTF-16 units
+/// leaves headroom under the 4096 limit.
+const TELEGRAM_CHUNK_BUDGET: usize = 2000;
 
 pub async fn verify_token(token: &str) -> Result<Me, String> {
     let bot = Bot::new(token);

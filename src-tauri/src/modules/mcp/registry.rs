@@ -637,11 +637,14 @@ fn score_tool_combined(
 }
 
 /// Weight recent invocations: newest names in the deque score highest.
+/// `recent` is in insertion order (oldest first, newest last — see
+/// `state::note_tools_used`), so the index `i` is also the "age rank" — a
+/// larger `i` is a newer tool, and we want that to score higher.
 fn recent_tool_score(tool: &ToolDef, recent: &[String]) -> usize {
     let mut score = 0usize;
     for (i, r) in recent.iter().enumerate() {
         if tool_name_matches_recent(tool, r) {
-            let weight = recent.len().saturating_sub(i);
+            let weight = i + 1;
             score += 8 + weight * 4;
         }
     }

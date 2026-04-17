@@ -13,7 +13,6 @@ const THINK_ON_EN: &[&str] = &[
     "be thorough",
     "think step by step",
     "think deeply",
-    "deep think",
 ];
 
 const THINK_ON_DE: &[&str] = &[

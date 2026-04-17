@@ -26,7 +26,12 @@ fn classify(name: &str, desc: &str) -> (String, ToolRisk) {
     }
     if matches!(
         name,
-        "create_entities" | "add_observations" | "create_relations" | "delete_entities"
+        "create_entities"
+            | "add_observations"
+            | "create_relations"
+            | "delete_entities"
+            | "delete_observations"
+            | "delete_relations"
     ) || desc.contains("knowledge graph")
         || desc.contains("entity")
     {

@@ -39,8 +39,8 @@ const SUMMARY_SYSTEM_PROMPT: &str = "You synthesize tool results for the user. R
    - Never omit **Quellen** when the Data came from web fetches.\n\
 5) Keep the body concise but do not drop **Quellen** to save space.";
 
-fn chat_options_for_agent_step(step: usize, user_wants_think: bool) -> ChatOptions {
-    if step == 0 {
+fn chat_options_for_agent_step(post_tool: bool, user_wants_think: bool) -> ChatOptions {
+    if !post_tool {
         ChatOptions {
             think: Some(user_wants_think),
             num_predict: None,
@@ -562,6 +562,10 @@ async fn run_model_turn(
     let mut tools_supported = true;
     let empty_tools = json!([]);
     let mut routing_escalated = false;
+    // Counts actual tool-result rounds, not loop iterations. A routing escalation
+    // re-enters step 0 with a fresh catalog, so it must not be treated as a
+    // post-tool continuation (no reminder, keep user's think/num_predict).
+    let mut tool_rounds: usize = 0;
 
     for step in 0..MAX_STEPS {
         let t0 = Instant::now();
@@ -570,9 +574,10 @@ async fn run_model_turn(
         } else {
             &empty_tools
         };
-        let chat_opts = chat_options_for_agent_step(step, think);
+        let post_tool = tool_rounds > 0;
+        let chat_opts = chat_options_for_agent_step(post_tool, think);
 
-        let inject_post_tool = step > 0;
+        let inject_post_tool = post_tool;
         if inject_post_tool {
             push_ephemeral_post_tool_reminder(&mut messages);
         }
@@ -724,6 +729,7 @@ async fn run_model_turn(
                 &format!("{} tool(s) {}", prepared.len(), fmt_duration(t0.elapsed())),
             )
             .await;
+        tool_rounds += 1;
 
         if !direct_replies.is_empty() {
             return Ok(TurnResult {

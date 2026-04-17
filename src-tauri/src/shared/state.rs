@@ -80,6 +80,9 @@ impl AppState {
         }
     }
 
+    /// Snapshot of recently invoked tool names in **insertion order** (oldest
+    /// first, newest last). Callers relying on recency weighting (e.g. the
+    /// tool router) must treat a larger index as "more recent".
     pub async fn recent_tools_snapshot(&self) -> Vec<String> {
         self.recent_tool_names.lock().await.clone()
     }

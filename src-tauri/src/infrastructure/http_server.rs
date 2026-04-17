@@ -1265,6 +1265,7 @@ pub struct ClawHubSearchResponseDto {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClawHubSearchQuery {
     #[serde(default)]
     pub q: Option<String>,
