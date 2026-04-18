@@ -1,3 +1,4 @@
+use crate::infrastructure::audit_log;
 use crate::infrastructure::http_server;
 use crate::modules::bot::{commands, repository, service as bot_service};
 use crate::modules::cron::{repository as cron_repository, scheduler as cron_scheduler};
@@ -68,7 +69,7 @@ pub fn run() {
                 }
             }
 
-            let shared_state = AppState::new(path, mcp_path, mcp_src.to_string());
+            let (shared_state, audit_rx) = AppState::new(path, mcp_path, mcp_src.to_string());
 
             {
                 let handle = app.handle().clone();
@@ -79,6 +80,11 @@ pub fn run() {
             }
 
             app.manage(shared_state.clone());
+
+            let audit_store = shared_state.store_path.clone();
+            tauri::async_runtime::spawn(async move {
+                audit_log::run_audit_writer(audit_store, audit_rx).await;
+            });
 
             // Load persisted cron jobs + last-known Telegram chat id before the scheduler spins up,
             // so a scheduled job can fire on its first tick after restart.

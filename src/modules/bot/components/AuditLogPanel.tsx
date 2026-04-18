@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { auditDeleteFile, auditListFiles, auditReadFile } from "../api";
 import type { AuditLogFileInfo } from "../types";
 import { logLineKindClass } from "./logLineKindClass";
@@ -44,6 +44,14 @@ export function AuditLogPanel() {
   const [lines, setLines] = useState<ReturnType<typeof parseNdjson>>([]);
   const [loadingFile, setLoadingFile] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const loadList = useCallback(async () => {
     setBusy(true);
@@ -68,23 +76,19 @@ export function AuditLogPanel() {
       setLoadingFile(false);
       return;
     }
-    let alive = true;
     setLoadingFile(true);
     void auditReadFile(selected).then(
       (text) => {
-        if (!alive) return;
+        if (!isMountedRef.current) return;
         setLines(text ? parseNdjson(text) : []);
         setLoadingFile(false);
       },
       () => {
-        if (!alive) return;
+        if (!isMountedRef.current) return;
         setLines([]);
         setLoadingFile(false);
       },
     );
-    return () => {
-      alive = false;
-    };
   }, [selected]);
 
   useEffect(() => {
@@ -155,6 +159,7 @@ export function AuditLogPanel() {
                     <button
                       type="button"
                       className="min-w-0 flex-1 truncate text-left text-slate-200"
+                      title="File name is your local calendar date; timestamps inside the log are UTC."
                       onClick={() => setSelected(f.date)}
                     >
                       {f.date} <span className="text-white/40">({fmtBytes(f.size_bytes)})</span>
@@ -167,6 +172,7 @@ export function AuditLogPanel() {
                         if (!window.confirm(`Delete log for ${f.date}?`)) return;
                         setDeleting(f.date);
                         const ok = await auditDeleteFile(f.date);
+                        if (!isMountedRef.current) return;
                         setDeleting(null);
                         if (ok) {
                           if (selected === f.date) setSelected(null);

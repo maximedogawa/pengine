@@ -12,7 +12,8 @@ export const PENGINE = {
 export async function auditListFiles(): Promise<AuditLogFileInfo[] | null> {
   try {
     return await invoke<AuditLogFileInfo[]>("audit_list_files");
-  } catch {
+  } catch (err) {
+    console.error("[auditListFiles] invoke failed", err);
     return null;
   }
 }
@@ -20,7 +21,8 @@ export async function auditListFiles(): Promise<AuditLogFileInfo[] | null> {
 export async function auditReadFile(date: string): Promise<string | null> {
   try {
     return await invoke<string>("audit_read_file", { date });
-  } catch {
+  } catch (err) {
+    console.error("[auditReadFile] invoke failed", { date, err });
     return null;
   }
 }
@@ -29,7 +31,8 @@ export async function auditDeleteFile(date: string): Promise<boolean> {
   try {
     await invoke("audit_delete_file", { date });
     return true;
-  } catch {
+  } catch (err) {
+    console.error("[auditDeleteFile] invoke failed", { date, err });
     return false;
   }
 }

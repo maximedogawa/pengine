@@ -6,10 +6,12 @@ import { createPengineViteLogger } from "./vite/pengine-logger";
 
 const host = process.env.TAURI_DEV_HOST;
 
-export default defineConfig(async () => ({
-  customLogger: createPengineViteLogger(),
-  plugins: [tailwindcss(), react()],
-  clearScreen: false,
+export default defineConfig(async () => {
+  const clearScreen = false;
+  return {
+    customLogger: createPengineViteLogger("info", { allowClearScreen: clearScreen }),
+    plugins: [tailwindcss(), react()],
+    clearScreen,
   server: {
     port: 1420,
     strictPort: true,
@@ -25,4 +27,5 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
-}));
+  };
+});

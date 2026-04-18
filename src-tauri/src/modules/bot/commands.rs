@@ -78,7 +78,7 @@ pub async fn audit_list_files(
 ) -> Result<Vec<audit_log::AuditFileEntry>, String> {
     audit_log::list_audit_files(&state.store_path)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(audit_log::command_error_from_io)
 }
 
 /// Read one day’s NDJSON audit file.
@@ -89,7 +89,7 @@ pub async fn audit_read_file(
 ) -> Result<String, String> {
     audit_log::read_audit_file(&state.store_path, date.trim())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(audit_log::command_error_from_io)
 }
 
 /// Delete one day’s audit file.
@@ -100,5 +100,5 @@ pub async fn audit_delete_file(
 ) -> Result<(), String> {
     audit_log::remove_audit_file(&state.store_path, date.trim())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(audit_log::command_error_from_io)
 }

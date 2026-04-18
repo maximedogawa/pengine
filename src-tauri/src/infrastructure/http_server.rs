@@ -2213,21 +2213,17 @@ async fn handle_cron_test(
 async fn handle_audit_logs_list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<audit_log::AuditFileEntry>>, (StatusCode, Json<ErrorResponse>)> {
-    match audit_log::list_audit_files(&state.store_path).await {
-        Ok(entries) => Ok(Json(entries)),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )),
-    }
+    audit_log::list_audit_files(&state.store_path)
+        .await
+        .map(Json)
+        .map_err(audit_io_error)
 }
 
 fn audit_io_error(e: std::io::Error) -> (StatusCode, Json<ErrorResponse>) {
     let (status, msg) = match e.kind() {
         ErrorKind::NotFound => (StatusCode::NOT_FOUND, "audit log not found".to_string()),
         ErrorKind::InvalidInput => (StatusCode::BAD_REQUEST, e.to_string()),
+        ErrorKind::InvalidData => (StatusCode::PAYLOAD_TOO_LARGE, e.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     (status, Json(ErrorResponse { error: msg }))

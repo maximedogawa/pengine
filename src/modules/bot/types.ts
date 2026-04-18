@@ -5,7 +5,11 @@ export type PengineHealth = {
   bot_id?: string | null;
 };
 
-/** One daily `audit-YYYY-MM-DD.log` row from disk (Tauri or File System Access API). */
+/**
+ * One daily `audit-YYYY-MM-DD.log` row from disk (Tauri `AuditFileEntry` over IPC).
+ * Keep `size_bytes` in snake_case: it must match serde field names from the Rust struct;
+ * renaming to camelCase would break deserialization.
+ */
 export type AuditLogFileInfo = {
   date: string;
   filename: string;
