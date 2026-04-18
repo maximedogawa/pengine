@@ -12,7 +12,7 @@ pub enum SkillOrigin {
 
 /// A skill is a folder with a `SKILL.md` whose YAML frontmatter declares the
 /// fields below. The markdown body after the frontmatter is passed to the agent
-/// as context — see `doc/skills.md`.
+/// as context — see `doc/guides/skills.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     pub slug: String,
@@ -39,9 +39,14 @@ pub struct Skill {
     pub brave_allow_substrings: Vec<String>,
     #[serde(default)]
     pub origin: SkillOrigin,
-    /// Optional extra rules from `mandatory.md` next to `SKILL.md` (server-only; not serialized to clients).
-    #[serde(skip)]
-    pub mandatory_hint: Option<String>,
+    /// Optional extra rules from `mandatory.md` next to `SKILL.md` (also returned for custom skills in the API).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "mandatoryMarkdown",
+        alias = "mandatory_markdown"
+    )]
+    pub mandatory_markdown: Option<String>,
     /// Whether the agent should see this skill. Controlled per-slug in the UI.
     #[serde(default = "default_true")]
     pub enabled: bool,
