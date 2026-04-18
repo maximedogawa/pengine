@@ -6,17 +6,16 @@ workflow. Pushing a tag matching `v*` (e.g. `v1.0.1`) triggers a build on each
 platform and publishes the installers in two places:
 
 - as assets on a **draft** GitHub Release (for humans to download), and
-- as OCI artifacts on GHCR under
-  `ghcr.io/pengine-ai/pengine-installer-<macos|linux|windows>:<version>`, which
-  surface on the org's
-  [linked artifacts page](https://github.com/orgs/pengine-ai/artifacts) next to
-  the tool images.
+- as GitHub Actions build artifacts (`pengine-macos`, `pengine-linux`,
+  `pengine-windows`) with a signed SLSA build-provenance attestation. The
+  attestations surface on the org's
+  [linked artifacts page](https://github.com/orgs/pengine-ai/artifacts) via
+  the artifact metadata API — GHCR is reserved for Docker images (tools).
 
-Pull an installer from the registry with
-[`oras`](https://oras.land/docs/installation):
+Verify a downloaded binary's provenance with the GitHub CLI:
 
 ```bash
-oras pull ghcr.io/pengine-ai/pengine-installer-macos:1.0.1
+gh attestation verify ./pengine_1.0.1_amd64.AppImage --owner pengine-ai
 ```
 
 ```bash

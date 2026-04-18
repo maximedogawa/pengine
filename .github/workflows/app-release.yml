@@ -10,9 +10,10 @@ name: App Release
 # Builds are currently unsigned. See doc/guides/releasing.md for how to obtain
 # Apple and Windows code-signing credentials and wire them back in here.
 #
-# After the installers are built, each platform job also pushes them to GHCR
-# as an OCI artifact (ghcr.io/<owner>/pengine-installer-<slug>:<version>) so
-# they appear on the org's linked artifacts page alongside tool images.
+# After the build, each platform job also uploads its bundles as GitHub
+# Actions build artifacts and generates a signed SLSA provenance attestation
+# (actions/attest-build-provenance). The attestation is what surfaces the
+# binaries on the org's linked-artifacts view via the artifact metadata API.
 
 on:
   push:
@@ -26,7 +27,8 @@ on:
 
 permissions:
   contents: write
-  packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -101,17 +103,21 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
-      - name: Set up oras
-        uses: oras-project/setup-oras@v1
-
-      - name: Publish installers to GHCR
+      - name: Stage binaries
+        id: stage
         shell: bash
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          SLUG: ${{ matrix.slug }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
-        run: bash .github/scripts/app-release/push-installers.sh
+        run: bash .github/scripts/app-release/stage-binaries.sh
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pengine-${{ matrix.slug }}
+          path: ${{ steps.stage.outputs.dir }}
+          if-no-files-found: error
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.stage.outputs.dir }}/*
