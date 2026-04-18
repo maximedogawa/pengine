@@ -1,8 +1,10 @@
+use crate::modules::cron::types::CronJob;
 use crate::modules::mcp::registry::ToolRegistry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -90,11 +92,24 @@ pub struct AppState {
     pub tool_ctx_latency_ms: Arc<Mutex<Vec<u64>>>,
     /// Max UTF-8 bytes for the combined skills system-prompt fragment (dashboard / `user_settings.json`).
     pub skills_hint_max_bytes: Arc<RwLock<u32>>,
+    /// `$APP_DATA/cron.json` — scheduled jobs + last-known Telegram chat id.
+    pub cron_path: PathBuf,
+    pub cron_jobs: Arc<RwLock<Vec<CronJob>>>,
+    /// Wake the scheduler immediately after CRUD / enable / test operations.
+    pub cron_notify: Arc<Notify>,
+    /// Last Telegram chat id that sent a message to the bot. Scheduled cron jobs
+    /// push their replies here. Persisted inside `cron.json`.
+    pub last_chat_id: Arc<RwLock<Option<i64>>>,
+    /// Rate-limit scheduler logs when jobs are due but `last_chat_id` is still unknown.
+    pub cron_no_chat_warned: Arc<AtomicBool>,
+    /// Serializes `cron.json` snapshots + disk writes with HTTP / scheduler / MCP callers.
+    pub cron_save_mutex: Arc<Mutex<()>>,
 }
 
 impl AppState {
     pub fn new(store_path: PathBuf, mcp_config_path: PathBuf, mcp_config_source: String) -> Self {
         let skills_cap = crate::shared::user_settings::load_skills_hint_max_bytes(&store_path);
+        let cron_path = crate::modules::cron::repository::cron_path(&store_path);
         let (log_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             connection: Arc::new(Mutex::new(None)),
@@ -115,6 +130,12 @@ impl AppState {
             recent_tool_names: Arc::new(Mutex::new(Vec::new())),
             tool_ctx_latency_ms: Arc::new(Mutex::new(Vec::new())),
             skills_hint_max_bytes: Arc::new(RwLock::new(skills_cap)),
+            cron_path,
+            cron_jobs: Arc::new(RwLock::new(Vec::new())),
+            cron_notify: Arc::new(Notify::new()),
+            last_chat_id: Arc::new(RwLock::new(None)),
+            cron_no_chat_warned: Arc::new(AtomicBool::new(false)),
+            cron_save_mutex: Arc::new(Mutex::new(())),
         }
     }
 

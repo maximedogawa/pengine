@@ -1,0 +1,6 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBundleCommand": "rm -f target/release/bundle/macos/*.dmg target/release/bundle/dmg/*.dmg"
+  }
+}
