@@ -7,6 +7,7 @@ import { McpToolsPanel } from "../modules/mcp/components/McpToolsPanel";
 import { fetchOllamaModels, setPreferredOllamaModel } from "../modules/ollama/api";
 import { SkillsPanel } from "../modules/skills";
 import { ToolEnginePanel } from "../modules/toolengine/components/ToolEnginePanel";
+import { UpdateIndicator } from "../modules/updater";
 import { TopMenu } from "../shared/ui/TopMenu";
 
 type ServiceInfo = {
@@ -222,6 +223,8 @@ export function DashboardPage() {
             {gitCommit !== "unknown" ? ` · ${gitCommit.slice(0, 7)}` : ""}
           </p>
         )}
+
+        <UpdateIndicator currentVersion={appVersion} />
 
         {/* ── Terminal (full width) — live runtime log ───────── */}
         <section className="mt-4 sm:mt-6">

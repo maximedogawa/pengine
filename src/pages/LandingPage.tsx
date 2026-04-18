@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { TerminalPreview } from "../modules/bot/components/TerminalPreview";
+import { DownloadLatestButton } from "../modules/updater";
 import { PhoneMockup } from "../shared/ui/PhoneMockup";
 import { SpecMockup } from "../shared/ui/SpecMockup";
 import { TopMenu } from "../shared/ui/TopMenu";
@@ -130,6 +131,7 @@ export function LandingPage() {
               <Link to="/setup" className="primary-button px-6">
                 Scan and connect
               </Link>
+              <DownloadLatestButton className="secondary-button px-6" />
               <a href="#spec" className="secondary-button px-6">
                 Read the spec
               </a>
@@ -439,6 +441,7 @@ export function LandingPage() {
               <Link to="/setup" className="primary-button px-6">
                 Open setup wizard
               </Link>
+              <DownloadLatestButton className="secondary-button px-6" />
               <a
                 href="https://github.com/pengine-ai/pengine"
                 className="secondary-button gap-2 px-6"
