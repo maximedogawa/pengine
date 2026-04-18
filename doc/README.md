@@ -8,6 +8,9 @@ Short reference for developers and AI agents. Deep dives live in the linked file
 | --- | --- |
 | [design/README.md](design/README.md) | Repo layout, DDD boundaries, frontend/backend rules, tooling commands |
 | [design/mcp.md](design/mcp.md) | MCP host/client flow, Ollama tool bridge, audit logging |
+| [agent-runtime.md](agent-runtime.md) | **`run_turn`**, tool routing, system prompt, Ollama loop, limits |
+| [data-and-startup.md](data-and-startup.md) | **`AppState`**, on-disk files, keychain, **`app.rs`** boot order |
+| [http-api.md](http-api.md) | Loopback REST + SSE endpoints (method/path tables) |
 | [custom-mcp-tools.md](custom-mcp-tools.md) | `mcp.json`, stdio/native servers, Docker/custom tools, HTTP API snippets |
 | [skills.md](skills.md) | Skill format, ClawHub, bundled vs custom dirs |
 | [tool-engine/manual-publish.md](tool-engine/manual-publish.md) | GHCR images, `mcp-tools.json`, maintainer publish flow |
@@ -36,7 +39,7 @@ Use this table to jump to the right area when changing behavior.
 
 ## HTTP API (quick list)
 
-Base URL: `http://127.0.0.1:21516` (see `src/shared/api/config.ts`).
+Base URL: `http://127.0.0.1:21516` (see `src/shared/api/config.ts`). Per-endpoint notes: **[http-api.md](http-api.md)**.
 
 - **Core:** `POST/DELETE /v1/connect`, `GET /v1/health`, `GET /v1/logs` (SSE)
 - **Ollama:** `GET /v1/ollama/models`, `PUT /v1/ollama/model`
