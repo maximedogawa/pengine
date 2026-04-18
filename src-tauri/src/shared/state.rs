@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -99,6 +100,8 @@ pub struct AppState {
     /// Last Telegram chat id that sent a message to the bot. Scheduled cron jobs
     /// push their replies here. Persisted inside `cron.json`.
     pub last_chat_id: Arc<RwLock<Option<i64>>>,
+    /// Rate-limit scheduler logs when jobs are due but `last_chat_id` is still unknown.
+    pub cron_no_chat_warned: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -129,6 +132,7 @@ impl AppState {
             cron_jobs: Arc::new(RwLock::new(Vec::new())),
             cron_notify: Arc::new(Notify::new()),
             last_chat_id: Arc::new(RwLock::new(None)),
+            cron_no_chat_warned: Arc::new(AtomicBool::new(false)),
         }
     }
 

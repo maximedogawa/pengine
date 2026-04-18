@@ -409,9 +409,9 @@ pub fn skills_prompt_hint(store_path: &Path) -> String {
 }
 
 /// Deduplicate `requested` and keep only slugs that exist on disk (bundled or custom).
-/// Preserves first-seen order using canonical slug spelling from [`list_skills`].
+/// Preserves first-seen order using canonical slug spelling from on-disk skills.
 pub fn canonicalize_skill_slug_list(store_path: &Path, requested: &[String]) -> Vec<String> {
-    let by_lower: HashMap<String, String> = list_skills(store_path)
+    let by_lower: HashMap<String, String> = gather_skills_sorted(store_path)
         .into_iter()
         .map(|s| (s.slug.to_lowercase(), s.slug))
         .collect();

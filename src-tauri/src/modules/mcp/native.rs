@@ -474,7 +474,18 @@ async fn set_cron_enabled(state: &AppState, job_id: &str, enabled: bool) -> Resu
         jobs: snapshot,
         last_chat_id,
     };
-    crate::modules::cron::repository::save(&state.cron_path, &file)?;
+    let path = state.cron_path.clone();
+    let save_result =
+        tokio::task::spawn_blocking(move || crate::modules::cron::repository::save(&path, &file))
+            .await
+            .map_err(|e| format!("cron save task: {e}"))?;
+    if let Err(e) = save_result {
+        let mut jobs = state.cron_jobs.write().await;
+        if let Some(j) = jobs.iter_mut().find(|j| j.id == job_id) {
+            j.enabled = !enabled;
+        }
+        return Err(e);
+    }
     state.cron_notify.notify_waiters();
     let verb = if enabled { "enabled" } else { "disabled" };
     Ok(format!("Job '{}' {verb}.", updated.name))

@@ -1994,11 +1994,16 @@ async fn handle_cron_create(
         created_at: Utc::now(),
         last_run_at: None,
     };
+    let job_id = job.id.clone();
     {
         let mut jobs = state.cron_jobs.write().await;
         jobs.push(job.clone());
     }
-    persist_cron(&state).await.map_err(internal)?;
+    if let Err(e) = persist_cron(&state).await {
+        let mut jobs = state.cron_jobs.write().await;
+        jobs.retain(|j| j.id != job_id);
+        return Err(internal(e));
+    }
     state.cron_notify.notify_waiters();
     state
         .emit_log("cron", &format!("job '{}' created ({})", job.name, job.id))
@@ -2014,20 +2019,27 @@ async fn handle_cron_update(
     cron_service::validate(&body.name, &body.instruction, &body.schedule).map_err(bad_request)?;
     let skill_slugs =
         skills_service::canonicalize_skill_slug_list(&state.store_path, &body.skill_slugs);
-    let updated = {
+    let (backup, updated) = {
         let mut jobs = state.cron_jobs.write().await;
         let Some(job) = jobs.iter_mut().find(|j| j.id == id) else {
             return Err(not_found(format!("cron job '{id}' not found")));
         };
+        let backup = job.clone();
         job.name = body.name.trim().to_string();
         job.instruction = body.instruction.trim().to_string();
         job.condition = body.condition.trim().to_string();
         job.skill_slugs = skill_slugs;
         job.schedule = body.schedule;
         job.enabled = body.enabled;
-        job.clone()
+        (backup, job.clone())
     };
-    persist_cron(&state).await.map_err(internal)?;
+    if let Err(e) = persist_cron(&state).await {
+        let mut jobs = state.cron_jobs.write().await;
+        if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
+            *j = backup;
+        }
+        return Err(internal(e));
+    }
     state.cron_notify.notify_waiters();
     state
         .emit_log("cron", &format!("job '{}' updated ({id})", updated.name))
@@ -2039,16 +2051,18 @@ async fn handle_cron_delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
-    let removed = {
+    let removed: CronJob = {
         let mut jobs = state.cron_jobs.write().await;
-        let before = jobs.len();
-        jobs.retain(|j| j.id != id);
-        before != jobs.len()
+        let Some(pos) = jobs.iter().position(|j| j.id == id) else {
+            return Err(not_found(format!("cron job '{id}' not found")));
+        };
+        jobs.remove(pos)
     };
-    if !removed {
-        return Err(not_found(format!("cron job '{id}' not found")));
+    if let Err(e) = persist_cron(&state).await {
+        let mut jobs = state.cron_jobs.write().await;
+        jobs.push(removed);
+        return Err(internal(e));
     }
-    persist_cron(&state).await.map_err(internal)?;
     state.cron_notify.notify_waiters();
     state.emit_log("cron", &format!("job '{id}' deleted")).await;
     Ok((StatusCode::OK, Json(serde_json::json!({ "ok": true }))))
@@ -2059,18 +2073,22 @@ async fn handle_cron_set_enabled(
     Path(id): Path<String>,
     Json(body): Json<CronSetEnabledBody>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
-    let found = {
+    let prev_enabled = {
         let mut jobs = state.cron_jobs.write().await;
         let Some(job) = jobs.iter_mut().find(|j| j.id == id) else {
             return Err(not_found(format!("cron job '{id}' not found")));
         };
+        let prev = job.enabled;
         job.enabled = body.enabled;
-        true
+        prev
     };
-    if !found {
-        return Err(not_found(format!("cron job '{id}' not found")));
+    if let Err(e) = persist_cron(&state).await {
+        let mut jobs = state.cron_jobs.write().await;
+        if let Some(j) = jobs.iter_mut().find(|j| j.id == id) {
+            j.enabled = prev_enabled;
+        }
+        return Err(internal(e));
     }
-    persist_cron(&state).await.map_err(internal)?;
     state.cron_notify.notify_waiters();
     state
         .emit_log(
@@ -2108,7 +2126,9 @@ async fn handle_cron_test(
         .await
         .map_err(|e| internal(format!("agent error: {e}")))?;
     let reply = turn.text;
-    let condition_met = !turn.suppress_telegram_reply && !cron_service::is_no_message_reply(&reply);
+    let condition_met = !turn.suppress_telegram_reply
+        && !reply.trim().is_empty()
+        && !cron_service::is_no_message_reply(&reply);
 
     let (telegram_sent, telegram_error) = if turn.suppress_telegram_reply
         || reply.trim().is_empty()

@@ -123,7 +123,7 @@ function SortableSkillCard({
           type="button"
           {...attributes}
           {...listeners}
-          className="mt-0.5 shrink-0 cursor-grab select-none border-0 bg-transparent p-0 font-mono text-sm text-white/30 outline-none active:cursor-grabbing"
+          className="mt-0.5 shrink-0 cursor-grab select-none border-0 bg-transparent p-0 font-mono text-sm text-white/30 outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0c0c10] active:cursor-grabbing"
           title="Drag to reorder"
           aria-label={`Drag to reorder ${skill.slug}`}
         >

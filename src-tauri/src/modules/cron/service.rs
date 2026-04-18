@@ -57,11 +57,11 @@ pub fn compose_prompt(job: &CronJob) -> String {
     }
 }
 
-/// True when the scheduler should skip delivery for this reply.
+/// True when the scheduler should skip delivery for this reply (explicit sentinel only).
 pub fn is_no_message_reply(text: &str) -> bool {
     let t = text.trim().trim_matches(|c: char| c == '"' || c == '\'');
     if t.is_empty() {
-        return true;
+        return false;
     }
     let t_lower = t.to_ascii_lowercase();
     t_lower == NO_MESSAGE_SENTINEL
@@ -71,11 +71,11 @@ pub fn is_no_message_reply(text: &str) -> bool {
         || t_lower == "no_message"
 }
 
-/// Next time this schedule should fire, given the last time it ran.
-pub fn next_due(
+fn next_due_in_wall_clock_tz<Tz: TimeZone>(
     schedule: &Schedule,
     last_run: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
+    wall: &Tz,
 ) -> DateTime<Utc> {
     match schedule {
         Schedule::EveryMinutes { minutes } => match last_run {
@@ -85,47 +85,53 @@ pub fn next_due(
         Schedule::DailyAt { hour, minute } => {
             let h = *hour as u32;
             let m = *minute as u32;
-            let now_local = now.with_timezone(&Local);
-            let today_local = now_local.date_naive();
-            let today_due_naive = today_local
+            let now_wall = now.with_timezone(wall);
+            let today_wall = now_wall.date_naive();
+            let today_due_naive = today_wall
                 .and_hms_opt(h, m, 0)
                 .expect("valid hours from validate()");
-            let today_due_local = match Local.from_local_datetime(&today_due_naive) {
+            let today_due_wall = match wall.from_local_datetime(&today_due_naive) {
                 LocalResult::Single(dt) => dt,
                 LocalResult::Ambiguous(earliest, _) => earliest,
                 LocalResult::None => {
-                    // Non-existent local time (DST gap): advance one hour and retry once.
                     let adjusted = today_due_naive + Duration::hours(1);
-                    Local
-                        .from_local_datetime(&adjusted)
+                    wall.from_local_datetime(&adjusted)
                         .single()
-                        .expect("adjusted daily_at time should exist in local TZ")
+                        .expect("adjusted daily_at time should exist in wall clock TZ")
                 }
             };
-            let today_due = today_due_local.with_timezone(&Utc);
+            let today_due = today_due_wall.with_timezone(&Utc);
             let already_ran_today = last_run.is_some_and(|t| t >= today_due);
             if already_ran_today {
-                let next_naive = today_local + Duration::days(1);
+                let next_naive = today_wall + Duration::days(1);
                 let next_due_naive = next_naive
                     .and_hms_opt(h, m, 0)
                     .expect("valid hours from validate()");
-                let next_due_local = match Local.from_local_datetime(&next_due_naive) {
+                let next_due_wall = match wall.from_local_datetime(&next_due_naive) {
                     LocalResult::Single(dt) => dt,
                     LocalResult::Ambiguous(earliest, _) => earliest,
                     LocalResult::None => {
                         let adjusted = next_due_naive + Duration::hours(1);
-                        Local
-                            .from_local_datetime(&adjusted)
+                        wall.from_local_datetime(&adjusted)
                             .single()
                             .expect("adjusted next daily_at should exist")
                     }
                 };
-                next_due_local.with_timezone(&Utc)
+                next_due_wall.with_timezone(&Utc)
             } else {
                 today_due
             }
         }
     }
+}
+
+/// Next time this schedule should fire, given the last time it ran.
+pub fn next_due(
+    schedule: &Schedule,
+    last_run: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> DateTime<Utc> {
+    next_due_in_wall_clock_tz(schedule, last_run, now, &Local)
 }
 
 pub fn is_due(schedule: &Schedule, last_run: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
@@ -135,20 +141,18 @@ pub fn is_due(schedule: &Schedule, last_run: Option<DateTime<Utc>>, now: DateTim
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Once;
-
-    static UTC_TZ: Once = Once::new();
-
-    /// `DailyAt` tests assume local time == UTC (`TZ=UTC`).
-    fn ensure_daily_tests_use_utc() {
-        UTC_TZ.call_once(|| {
-            #[cfg(unix)]
-            std::env::set_var("TZ", "UTC");
-        });
-    }
 
     fn dt(y: i32, m: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, m, d, h, mi, 0).unwrap()
+    }
+
+    /// `DailyAt` schedule uses wall-clock hour/minute in the given timezone (`Utc` in tests).
+    fn is_due_daily_utc(
+        schedule: &Schedule,
+        last_run: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> bool {
+        now >= next_due_in_wall_clock_tz(schedule, last_run, now, &Utc)
     }
 
     #[test]
@@ -175,19 +179,17 @@ mod tests {
 
     #[test]
     fn daily_at_waits_until_target_time() {
-        ensure_daily_tests_use_utc();
         let s = Schedule::DailyAt { hour: 9, minute: 0 };
-        assert!(!is_due(&s, None, dt(2026, 4, 18, 8, 0)));
-        assert!(is_due(&s, None, dt(2026, 4, 18, 9, 0)));
+        assert!(!is_due_daily_utc(&s, None, dt(2026, 4, 18, 8, 0)));
+        assert!(is_due_daily_utc(&s, None, dt(2026, 4, 18, 9, 0)));
     }
 
     #[test]
     fn daily_at_rolls_to_tomorrow_after_firing() {
-        ensure_daily_tests_use_utc();
         let s = Schedule::DailyAt { hour: 9, minute: 0 };
         let last = dt(2026, 4, 18, 9, 0);
-        assert!(!is_due(&s, Some(last), dt(2026, 4, 18, 23, 59)));
-        assert!(is_due(&s, Some(last), dt(2026, 4, 19, 9, 0)));
+        assert!(!is_due_daily_utc(&s, Some(last), dt(2026, 4, 18, 23, 59)));
+        assert!(is_due_daily_utc(&s, Some(last), dt(2026, 4, 19, 9, 0)));
     }
 
     #[test]
@@ -196,6 +198,8 @@ mod tests {
         assert!(is_no_message_reply("  \"<no-message>\"  "));
         assert!(is_no_message_reply("no-message"));
         assert!(is_no_message_reply("NO_MESSAGE"));
+        assert!(!is_no_message_reply(""));
+        assert!(!is_no_message_reply("   "));
         assert!(!is_no_message_reply("price is $46000"));
     }
 

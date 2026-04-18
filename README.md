@@ -82,6 +82,8 @@ bun install
 bun run dev
 ```
 
+**npm peerDependency note:** `@dnd-kit/core` and `@dnd-kit/sortable` may print a peer warning with **React 19.1.0** because their `peerDependencies` still expect React 18.x. They are confirmed to work here on React 19. You can ignore the warning, run `npm install --legacy-peer-deps` if install fails, and rely on **`skipLibCheck: true`** in `tsconfig.json` (already set) if third-party types complain. No extra `suppressHydrationWarning` is required for dnd-kit.
+
 ### Tauri (optional)
 
 ```bash

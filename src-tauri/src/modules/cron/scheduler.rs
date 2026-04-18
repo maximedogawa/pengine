@@ -4,6 +4,7 @@ use super::types::{CronFile, CronJob};
 use crate::modules::bot::agent;
 use crate::shared::state::AppState;
 use crate::shared::text::split_by_chars;
+use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
@@ -48,20 +49,26 @@ async fn tick(state: &AppState) {
     if due.is_empty() {
         return;
     }
-    // Scheduled jobs have no chat to deliver to until the user messages the bot at
-    // least once. Skip the expensive agent turn entirely until that happens.
-    if state.last_chat_id.read().await.is_none() {
-        state
-            .emit_log(
-                "cron",
-                &format!(
-                    "{} job(s) due but no Telegram chat known yet — send any message to the bot first",
-                    due.len()
-                ),
-            )
-            .await;
+
+    let chat_known = state.last_chat_id.read().await.is_some();
+    if chat_known {
+        state.cron_no_chat_warned.store(false, Ordering::Relaxed);
+    } else {
+        let first_episode = !state.cron_no_chat_warned.swap(true, Ordering::Relaxed);
+        if first_episode {
+            state
+                .emit_log(
+                    "cron",
+                    &format!(
+                        "{} job(s) due but no Telegram chat known yet — send any message to the bot first",
+                        due.len()
+                    ),
+                )
+                .await;
+        }
         return;
     }
+
     for job in due {
         execute_job(state, job).await;
     }
@@ -104,7 +111,7 @@ pub async fn execute_job(state: &AppState, job: CronJob) {
                     .emit_log(
                         "cron",
                         &format!(
-                            "'{}' — model returned an empty reply; nothing sent to Telegram (check Ollama logs / try Test in Dashboard)",
+                            "'{}' — model returned an empty reply (not treated as <no-message>); nothing sent — check inference/transport and Ollama logs, or use Test in Dashboard",
                             job.name
                         ),
                     )

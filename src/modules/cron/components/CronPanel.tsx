@@ -139,7 +139,7 @@ export function CronPanel() {
     } else {
       const { hour, minute } = draft.schedule;
       if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-        setFormError("Time must be HH:MM in 24-hour UTC");
+        setFormError("Time must be HH:MM in 24-hour local time");
         return;
       }
     }
