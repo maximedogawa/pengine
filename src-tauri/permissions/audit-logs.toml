@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-audit-logs"
+description = "List, read, and delete daily NDJSON audit files under app data."
+commands.allow = ["audit_list_files", "audit_read_file", "audit_delete_file"]

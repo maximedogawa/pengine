@@ -1,3 +1,4 @@
+use crate::infrastructure::audit_log;
 use crate::infrastructure::bot_lifecycle;
 use crate::modules::bot::repository;
 use crate::modules::keywords::all_keyword_groups;
@@ -68,4 +69,36 @@ pub async fn pick_mcp_filesystem_folder() -> Result<Option<String>, String> {
 #[tauri::command]
 pub fn list_keyword_groups() -> Vec<&'static KeywordGroup> {
     all_keyword_groups()
+}
+
+/// List daily audit files on disk (`{store}/logs/audit-*.log`).
+#[tauri::command]
+pub async fn audit_list_files(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<audit_log::AuditFileEntry>, String> {
+    audit_log::list_audit_files(&state.store_path)
+        .await
+        .map_err(audit_log::command_error_from_io)
+}
+
+/// Read one day’s NDJSON audit file.
+#[tauri::command]
+pub async fn audit_read_file(
+    state: tauri::State<'_, AppState>,
+    date: String,
+) -> Result<String, String> {
+    audit_log::read_audit_file(&state.store_path, date.trim())
+        .await
+        .map_err(audit_log::command_error_from_io)
+}
+
+/// Delete one day’s audit file.
+#[tauri::command]
+pub async fn audit_delete_file(
+    state: tauri::State<'_, AppState>,
+    date: String,
+) -> Result<(), String> {
+    audit_log::remove_audit_file(&state.store_path, date.trim())
+        .await
+        .map_err(audit_log::command_error_from_io)
 }

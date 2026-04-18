@@ -104,14 +104,26 @@ pub struct AppState {
     pub cron_no_chat_warned: Arc<AtomicBool>,
     /// Serializes `cron.json` snapshots + disk writes with HTTP / scheduler / MCP callers.
     pub cron_save_mutex: Arc<Mutex<()>>,
+    /// Bounded queue to the background audit NDJSON writer (`audit_log::run_audit_writer`).
+    pub audit_tx: tokio::sync::mpsc::Sender<crate::infrastructure::audit_log::AuditLine>,
 }
 
 impl AppState {
-    pub fn new(store_path: PathBuf, mcp_config_path: PathBuf, mcp_config_source: String) -> Self {
+    /// Returns the app state and the audit writer receiver; spawn `audit_log::run_audit_writer`
+    /// on `tauri::async_runtime` after construction (see `app::run`).
+    pub fn new(
+        store_path: PathBuf,
+        mcp_config_path: PathBuf,
+        mcp_config_source: String,
+    ) -> (
+        Self,
+        tokio::sync::mpsc::Receiver<crate::infrastructure::audit_log::AuditLine>,
+    ) {
         let skills_cap = crate::shared::user_settings::load_skills_hint_max_bytes(&store_path);
         let cron_path = crate::modules::cron::repository::cron_path(&store_path);
         let (log_tx, _) = tokio::sync::broadcast::channel(256);
-        Self {
+        let (audit_tx, audit_rx) = tokio::sync::mpsc::channel(256);
+        let this = Self {
             connection: Arc::new(Mutex::new(None)),
             shutdown_notify: Arc::new(Notify::new()),
             bot_running: Arc::new(Mutex::new(false)),
@@ -136,7 +148,9 @@ impl AppState {
             last_chat_id: Arc::new(RwLock::new(None)),
             cron_no_chat_warned: Arc::new(AtomicBool::new(false)),
             cron_save_mutex: Arc::new(Mutex::new(())),
-        }
+            audit_tx,
+        };
+        (this, audit_rx)
     }
 
     /// Snapshot of recently invoked tool names in **insertion order** (oldest
@@ -199,5 +213,11 @@ impl AppState {
         if let Some(handle) = self.app_handle.lock().await.as_ref() {
             let _ = handle.emit("pengine-log", &entry);
         }
+
+        let line = crate::infrastructure::audit_log::AuditLine {
+            kind: kind.to_string(),
+            message: message.to_string(),
+        };
+        let _ = self.audit_tx.try_send(line);
     }
 }
