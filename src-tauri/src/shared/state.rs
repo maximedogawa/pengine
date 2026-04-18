@@ -9,12 +9,34 @@ use tokio::sync::{Mutex, Notify, RwLock};
 const RECENT_TOOLS_CAP: usize = 32;
 const TOOL_CTX_LATENCY_CAP: usize = 128;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// In-memory connection record. Holds the plaintext bot token while the bot runs.
+/// Not serializable on purpose — the token must never reach disk. Use
+/// `ConnectionMetadata` for anything persisted to `connection.json`.
+#[derive(Debug, Clone)]
 pub struct ConnectionData {
     pub bot_token: String,
     pub bot_id: String,
     pub bot_username: String,
     pub connected_at: DateTime<Utc>,
+}
+
+/// Persisted shape of `connection.json`. The bot token lives in the OS keychain and
+/// is loaded on demand via `modules::secure_store`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionMetadata {
+    pub bot_id: String,
+    pub bot_username: String,
+    pub connected_at: DateTime<Utc>,
+}
+
+impl From<&ConnectionData> for ConnectionMetadata {
+    fn from(c: &ConnectionData) -> Self {
+        Self {
+            bot_id: c.bot_id.clone(),
+            bot_username: c.bot_username.clone(),
+            connected_at: c.connected_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,10 +76,13 @@ pub struct AppState {
     pub recent_tool_names: Arc<Mutex<Vec<String>>>,
     /// Milliseconds spent in tool subset selection (rolling, for p95 logs).
     pub tool_ctx_latency_ms: Arc<Mutex<Vec<u64>>>,
+    /// Max UTF-8 bytes for the combined skills system-prompt fragment (dashboard / `user_settings.json`).
+    pub skills_hint_max_bytes: Arc<RwLock<u32>>,
 }
 
 impl AppState {
     pub fn new(store_path: PathBuf, mcp_config_path: PathBuf, mcp_config_source: String) -> Self {
+        let skills_cap = crate::shared::user_settings::load_skills_hint_max_bytes(&store_path);
         let (log_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             connection: Arc::new(Mutex::new(None)),
@@ -77,6 +102,7 @@ impl AppState {
             memory_session: Arc::new(RwLock::new(None)),
             recent_tool_names: Arc::new(Mutex::new(Vec::new())),
             tool_ctx_latency_ms: Arc::new(Mutex::new(Vec::new())),
+            skills_hint_max_bytes: Arc::new(RwLock::new(skills_cap)),
         }
     }
 
