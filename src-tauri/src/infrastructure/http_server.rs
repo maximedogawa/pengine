@@ -1,3 +1,4 @@
+use crate::infrastructure::audit_log;
 use crate::infrastructure::bot_lifecycle;
 use crate::modules::bot::{agent as bot_agent, repository, service as bot_service};
 use crate::modules::cron::{
@@ -12,10 +13,11 @@ use crate::modules::skills::types::{ClawHubPluginSummary, ClawHubSkill, Skill};
 use crate::modules::tool_engine::{runtime as te_runtime, service as te_service};
 use crate::shared::state::{AppState, ConnectionData, ConnectionMetadata};
 use crate::shared::user_settings;
-use axum::extract::Query;
-use axum::extract::{Path, State};
+use axum::body::Body;
+use axum::extract::{Path, Query, State};
+use axum::http::header::{self, HeaderValue};
 use axum::http::StatusCode;
-use axum::response::{Json, Sse};
+use axum::response::{Json, Response, Sse};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use chrono::Utc;
@@ -117,6 +119,11 @@ pub async fn start_server(state: AppState) {
         .route("/v1/connect", delete(handle_disconnect))
         .route("/v1/health", get(handle_health))
         .route("/v1/logs", get(handle_logs_sse))
+        .route("/v1/logs/audit", get(handle_audit_logs_list))
+        .route(
+            "/v1/logs/audit/{date}",
+            get(handle_audit_log_get).delete(handle_audit_log_delete),
+        )
         .route("/v1/ollama/models", get(handle_ollama_models))
         .route("/v1/ollama/model", put(handle_ollama_model_put))
         .route("/v1/settings", get(handle_user_settings_get))
@@ -2201,6 +2208,54 @@ async fn handle_cron_test(
             telegram_error,
         }),
     ))
+}
+
+async fn handle_audit_logs_list(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<audit_log::AuditFileEntry>>, (StatusCode, Json<ErrorResponse>)> {
+    match audit_log::list_audit_files(&state.store_path).await {
+        Ok(entries) => Ok(Json(entries)),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )),
+    }
+}
+
+fn audit_io_error(e: std::io::Error) -> (StatusCode, Json<ErrorResponse>) {
+    let (status, msg) = match e.kind() {
+        ErrorKind::NotFound => (StatusCode::NOT_FOUND, "audit log not found".to_string()),
+        ErrorKind::InvalidInput => (StatusCode::BAD_REQUEST, e.to_string()),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    (status, Json(ErrorResponse { error: msg }))
+}
+
+async fn handle_audit_log_get(
+    State(state): State<AppState>,
+    Path(date): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let body = audit_log::read_audit_file(&state.store_path, &date)
+        .await
+        .map_err(audit_io_error)?;
+    let mut res = Response::new(Body::from(body));
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/x-ndjson; charset=utf-8"),
+    );
+    Ok(res)
+}
+
+async fn handle_audit_log_delete(
+    State(state): State<AppState>,
+    Path(date): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    audit_log::remove_audit_file(&state.store_path, &date)
+        .await
+        .map_err(audit_io_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn handle_logs_sse(

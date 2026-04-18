@@ -183,6 +183,9 @@ pub fn run() {
             commands::disconnect_bot,
             commands::pick_mcp_filesystem_folder,
             commands::list_keyword_groups,
+            commands::audit_list_files,
+            commands::audit_read_file,
+            commands::audit_delete_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

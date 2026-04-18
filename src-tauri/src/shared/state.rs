@@ -199,5 +199,7 @@ impl AppState {
         if let Some(handle) = self.app_handle.lock().await.as_ref() {
             let _ = handle.emit("pengine-log", &entry);
         }
+
+        crate::infrastructure::audit_log::append_line_json(&self.store_path, kind, message).await;
     }
 }

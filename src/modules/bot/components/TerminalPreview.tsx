@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PENGINE } from "../api";
+import { logLineKindClass } from "./logLineKindClass";
 
 type LogLine = { timestamp: string; kind: string; message: string };
 
@@ -8,16 +9,6 @@ const fallbackLines: LogLine[] = [
 ];
 
 const SCROLL_NEAR_BOTTOM_PX = 64;
-
-function kindClass(kind: string) {
-  if (kind === "ok") return "bg-emerald-400/10 text-emerald-300";
-  if (kind === "run") return "bg-sky-400/10 text-sky-300";
-  if (kind === "tool") return "bg-yellow-400/10 text-yellow-200";
-  if (kind === "time") return "bg-fuchsia-400/10 text-fuchsia-200";
-  if (kind === "reply") return "bg-violet-400/10 text-violet-300";
-  if (kind === "msg") return "bg-cyan-400/10 text-cyan-300";
-  return "bg-slate-400/10 text-slate-300";
-}
 
 export function TerminalPreview() {
   const [lines, setLines] = useState<LogLine[]>(fallbackLines);
@@ -119,6 +110,9 @@ export function TerminalPreview() {
         <span className="h-3 w-3 rounded-full bg-[#febc2e]" />
         <span className="h-3 w-3 rounded-full bg-[#28c840]" />
         <p className="ml-2">pengine runtime</p>
+        <span className="ml-auto hidden text-[10px] uppercase tracking-[0.14em] text-white/35 sm:inline">
+          live
+        </span>
       </div>
       <div
         ref={scrollRef}
@@ -128,7 +122,7 @@ export function TerminalPreview() {
           <div key={`${line.timestamp}-${i}`} className="flex flex-wrap items-center gap-2">
             <span className="text-(--dim)">[{line.timestamp}]</span>
             <span
-              className={`rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.18em] ${kindClass(line.kind)}`}
+              className={`rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.18em] ${logLineKindClass(line.kind)}`}
             >
               {line.kind}
             </span>

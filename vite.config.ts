@@ -2,10 +2,12 @@ import process from "node:process";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { createPengineViteLogger } from "./vite/pengine-logger";
 
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig(async () => ({
+  customLogger: createPengineViteLogger(),
   plugins: [tailwindcss(), react()],
   clearScreen: false,
   server: {

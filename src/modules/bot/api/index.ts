@@ -1,5 +1,6 @@
-import { PENGINE_API_BASE } from "../../../shared/api/config";
-import type { PengineHealth } from "../types";
+import { invoke } from "@tauri-apps/api/core";
+import { makeTimeoutSignal, PENGINE_API_BASE } from "../../../shared/api/config";
+import type { AuditLogFileInfo, PengineHealth } from "../types";
 
 /** Loopback HTTP API paths (Tauri `connection_server`). */
 export const PENGINE = {
@@ -8,35 +9,73 @@ export const PENGINE = {
   logs: `${PENGINE_API_BASE}/v1/logs`,
 } as const;
 
-/** GET `/v1/health`; JSON on 200, otherwise `null` (offline / error). */
-export async function getPengineHealth(timeoutMs: number): Promise<PengineHealth | null> {
+export async function auditListFiles(): Promise<AuditLogFileInfo[] | null> {
   try {
-    const resp = await fetch(PENGINE.health, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!resp.ok) return null;
-    return (await resp.json()) as PengineHealth;
+    return await invoke<AuditLogFileInfo[]>("audit_list_files");
   } catch {
     return null;
   }
 }
 
+export async function auditReadFile(date: string): Promise<string | null> {
+  try {
+    return await invoke<string>("audit_read_file", { date });
+  } catch {
+    return null;
+  }
+}
+
+export async function auditDeleteFile(date: string): Promise<boolean> {
+  try {
+    await invoke("audit_delete_file", { date });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** GET `/v1/health`; JSON on 200, otherwise `null` (offline / error). */
+export async function getPengineHealth(timeoutMs: number): Promise<PengineHealth | null> {
+  const { signal, cleanup } = makeTimeoutSignal(timeoutMs);
+  try {
+    const resp = await fetch(PENGINE.health, { signal });
+    if (!resp.ok) return null;
+    return (await resp.json()) as PengineHealth;
+  } catch {
+    return null;
+  } finally {
+    cleanup();
+  }
+}
+
 export async function postConnect(botToken: string) {
-  const resp = await fetch(PENGINE.connect, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ bot_token: botToken.trim() }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  const data = (await resp.json()) as { bot_id?: string; bot_username?: string; error?: string };
-  return { ok: resp.ok, data };
+  const { signal, cleanup } = makeTimeoutSignal(15_000);
+  try {
+    const resp = await fetch(PENGINE.connect, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bot_token: botToken.trim() }),
+      signal,
+    });
+    const data = (await resp.json()) as { bot_id?: string; bot_username?: string; error?: string };
+    return { ok: resp.ok, data };
+  } finally {
+    cleanup();
+  }
 }
 
 export async function deleteConnect() {
-  const resp = await fetch(PENGINE.connect, {
-    method: "DELETE",
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    throw new Error(detail || `Disconnect failed (HTTP ${resp.status})`);
+  const { signal, cleanup } = makeTimeoutSignal(5000);
+  try {
+    const resp = await fetch(PENGINE.connect, {
+      method: "DELETE",
+      signal,
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(detail || `Disconnect failed (HTTP ${resp.status})`);
+    }
+  } finally {
+    cleanup();
   }
 }
