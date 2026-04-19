@@ -73,15 +73,29 @@ jobs:
           ref: ${{ steps.meta.outputs.ref }}
           fetch-depth: 1
 
+      # Tags like 1.0.1 may point to commits from before deploy/ existed. Restore only
+      # deploy/ from the default branch so the image still builds from the tag’s sources.
+      - name: Restore deploy/ from default branch if missing on ref
+        if: steps.registry.outputs.exists != 'true'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ -f deploy/Dockerfile ]; then
+            echo "deploy/Dockerfile present at ref ${{ steps.meta.outputs.ref }}"
+            exit 0
+          fi
+          DEF="${DEFAULT_BRANCH:-main}"
+          echo "::warning::No deploy/ at ref ${{ steps.meta.outputs.ref }} — restoring deploy/ from origin/${DEF}"
+          git fetch origin "${DEF}" --depth=1
+          git checkout FETCH_HEAD -- deploy/
+          test -f deploy/Dockerfile
+
       - name: Verify Dockerfile for image build
         if: steps.registry.outputs.exists != 'true'
         run: |
           set -euo pipefail
-          test -f deploy/Dockerfile || {
-            echo "::error::deploy/Dockerfile missing at ref ${{ steps.meta.outputs.ref }}. Use a tag/branch that includes deploy/Dockerfile."
-            ls -la deploy 2>/dev/null || ls -la
-            exit 1
-          }
+          test -f deploy/Dockerfile
 
       - name: Git short SHA
         if: steps.registry.outputs.exists != 'true'
