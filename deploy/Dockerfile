@@ -1,41 +1,44 @@
-# pengine-web: **website only** — same static bundle the Tauri desktop shell loads from
-# `dist/`, without building or running the native app.
-#
-# Pipeline build step: `npm run build:web` (see `package.json`). Local/Tauri may use `bun run build`
-# to the same `build:web` script. `build.frontendDist` → `../dist` (this image serves that on :80).
-#
-# Intentionally omitted: `tauri build`, Cargo, `src-tauri/` (see /.dockerignore).
+# pengine-web: Vite → `dist/`, served by static-web-server (not Next.js — no `.next` or `node server.js`).
 #
 # Build:  docker build -f deploy/Dockerfile .
-# Context: repository root (see /.dockerignore).
+# Context: repository root (see /.dockerignore). `src-tauri/` is excluded.
 
-FROM node:22-alpine
+# --- Build stage ---
+FROM oven/bun:1.2.23-alpine AS builder
+
 WORKDIR /app
 
 ENV HUSKY=0
 ENV NODE_ENV=production
 
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --ignore-scripts
+
+COPY . .
+
 ARG VITE_APP_ORIGIN=https://pengine.net
 ENV VITE_APP_ORIGIN=${VITE_APP_ORIGIN}
 
-COPY . .
-RUN npm install --frozen-lockfile --ignore-scripts
-RUN npm run build
+RUN bun run build:web
 
-FROM ghcr.io/static-web-server/static-web-server:2-alpine
+# --- Production: static file server (default CMD/ENTRYPOINT from upstream image) ---
+FROM ghcr.io/static-web-server/static-web-server:2-alpine AS runner
+
 USER root
-RUN apk add --no-cache wget
+RUN apk add --no-cache curl wget
 USER sws
 
-COPY --chown=sws:sws --from=build /app/dist /home/sws/public
+COPY --chown=sws:sws --from=builder /app/dist /home/sws/public
 
 ENV SERVER_HOST=0.0.0.0
-ENV SERVER_PORT=80
+# Same port as Vite dev (`vite.config.ts`) for a consistent ops story.
+ENV SERVER_PORT=1420
 ENV SERVER_ROOT=/home/sws/public
 ENV SERVER_FALLBACK_PAGE=/home/sws/public/index.html
 ENV SERVER_LOG_LEVEL=error
 
-EXPOSE 80
+EXPOSE 1420
 
-HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-  CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1
+# SPA: fallback page is already set; short start — no Node boot delay
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:1420/ >/dev/null || exit 1
