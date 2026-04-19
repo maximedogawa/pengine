@@ -9,14 +9,14 @@
 # Build:  docker build -f deploy/Dockerfile .
 # Context: repository root (see /.dockerignore).
 
-FROM oven/bun:1 AS build
+FROM node:22-alpine
 WORKDIR /app
 
 ENV HUSKY=0
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN npm install --frozen-lockfile --ignore-scripts
 
 COPY . .
 
