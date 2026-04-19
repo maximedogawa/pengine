@@ -1,49 +1,28 @@
-# Pengine deployment (with Pengui on the same host)
+# Pengine deployment
 
-## Networking
+## Production (same host as Pengui)
 
-- **`ports: 1422:1422`** — app reachable on the host at **`http://127.0.0.1:1422/`**.
-- **`pengui-network`** — Pengine joins Pengui’s external Docker network so **`pengui-nginx`** can proxy to **`http://pengine-app:1422`** (no `host.docker.internal`; avoids Linux docker0 / bridge mismatches).
+**Use the Pengui stack** — Pengine is an optional Compose **profile** there, so it shares **`pengui-network`** with nginx (no second compose project, no `external` network).
 
-Deploy **Pengui** first so the network **`pengui-network`** exists, then **`docker compose up -d`** here.
+1. In the Pengui repo, set **`PENGINE_ENABLE=1`** and **`PENGINE_WEB_IMAGE`** (e.g. `ghcr.io/pengine-ai/pengine-web:1.0.1`) in **GitHub Actions variables** or in `~/pengui/deployment/.env`.
+2. Deploy Pengui (`deploy.sh` or CI). That runs `docker compose --profile pengine up -d pengine-web`.
+3. Nginx proxies to **`http://pengine-app:1422`** (see Pengui `nginx/templates`).
 
-If your Pengui project still uses another network name (e.g. before the `name: pengui-network` change), set **`PENGUI_NETWORK_NAME`** in `.env` to that name, or run:
+**Do not** run this directory’s `docker compose up` on the same server at the same time — you would get a duplicate **`pengine-app`** name. Remove any old standalone Pengine stack first: `docker rm -f pengine-app` (only if moving to Pengui profile).
 
-`docker network connect <that-network-name> pengine-app`
-
-## Order of operations
-
-1. **DNS** — `pengine.net` (or your subdomain) A/AAAA → server IP (same host as Pengui if you use Pengui’s TLS + nginx).
-2. **GitHub variable** on the Pengui repo: **`PENGINE_SUBDOMAIN=pengine.net`** so `deploy.sh` adds `-d pengine.net` to Let’s Encrypt and writes `pengine.conf`.
-3. **Pengine** — `docker compose up -d` in this directory (after Pengui has created **`pengui-network`**).
-4. **Build** — For **`https://<DOMAIN>/pengine/`** use Vite `base: '/pengine/'`. For **`https://pengine.net/`** use default `base: '/'` / `VITE_APP_ORIGIN`.
-
-## Verify
+## Local / standalone (this repo only)
 
 ```bash
+cd deployment
+docker compose up -d
 curl -fsS http://127.0.0.1:1422/ | head
-docker compose -f ~/pengui/deployment/docker-compose.yml exec nginx \
-  wget -qO- --timeout=5 http://pengine-app:1422/ | head
 ```
 
-## TLS
+## TLS for `pengine.net`
 
-If **`curl https://pengine.net/`** fails certificate verification, expand the Let’s Encrypt cert to include **`pengine.net`** (see Pengui `deployment/scripts/deploy.sh` / Certbot `--expand`).
+Configure **`PENGINE_SUBDOMAIN`** on the **Pengui** repo (Certbot + nginx vhost); see Pengui `deployment/README.md`.
 
 ## Troubleshooting
 
-### `network pengui-network declared as external, but could not be found`
-
-The Pengine compose expects the **Pengui** stack to define that network (fixed name `pengui-network` in Pengui `docker-compose.yml`). **Create it and attach Pengui first:**
-
-```bash
-docker network create pengui-network 2>/dev/null || true
-cd ~/pengui/deployment && docker compose up -d
-docker network ls | grep pengui-network
-```
-
-Then start Pengine again: `docker compose up -d` in this directory.
-
-If Pengui still uses an **older** network name only (check `docker network ls` / `docker inspect pengui-nginx`), set in Pengine **`.env`**:
-
-`PENGUI_NETWORK_NAME=deployment_pengui-network` (use your actual network name).
+- **`network … external … not found`**: use **Pengui + `--profile pengine`**, not a separate compose with `external: pengui-network`.
+- **`incorrect label com.docker.compose.network`**: never run `docker network create pengui-network` by hand; let Pengui’s `docker compose up` create the network.
