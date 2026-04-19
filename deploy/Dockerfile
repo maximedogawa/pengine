@@ -15,15 +15,12 @@ WORKDIR /app
 ENV HUSKY=0
 ENV NODE_ENV=production
 
-COPY package.json package-lock.json ./
-RUN npm install --frozen-lockfile --ignore-scripts
-
-COPY . .
-
 ARG VITE_APP_ORIGIN=https://pengine.net
 ENV VITE_APP_ORIGIN=${VITE_APP_ORIGIN}
 
-RUN npm run build:web
+COPY . .
+RUN npm install --frozen-lockfile --ignore-scripts
+RUN npm run build
 
 FROM ghcr.io/static-web-server/static-web-server:2-alpine
 USER root
