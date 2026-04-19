@@ -6,13 +6,13 @@ The pengine web bundle is deployed to a remote host via the
 [`Deploy web app`](../../.github/workflows/web-deploy.yml) GitHub Actions
 workflow. It has two jobs:
 
-1. **Build and push image (if not in GHCR)** — If `ghcr.io/<owner>/pengine-web:<tag>` is **missing**, checks out that ref and builds [`deploy/Dockerfile`](../../deploy/Dockerfile) from the repo root (see [`/.dockerignore`](../../.dockerignore)): `bun install` → [`npm run build:web`](../../package.json) → [static-web-server](https://github.com/static-web-server/static-web-server) with **`SERVER_FALLBACK_PAGE`**. CI passes `VITE_APP_ORIGIN=https://pengine.net` as a **build-arg**. Pushes `:<tag>`, `:sha-<short>`, and `:latest`. If the package **already exists**, this job **skips** the build and logs that fact. **Packaging** loads `deploy/Dockerfile` via the **GitHub API** from the **default branch** (with fallbacks), then builds — so it always matches `main`, not an old copy on the tag. **`deploy/docker-compose.yml`** for the host is fetched the same way in the deploy job. **App sources** (`package.json`, `src/`, …) still come from the **tag** checkout.
+1. **Build and push image (if not in GHCR)** — If `ghcr.io/<owner>/pengine-web:<tag>` is **missing**, checks out that ref and builds [`deploy/Dockerfile`](../../deploy/Dockerfile) from the repo root (see [`/.dockerignore`](../../.dockerignore)): **`npm ci`** → [`npm run build:web`](../../package.json) → runtime runs **[`vite preview`](https://vite.dev/guide/cli#vite-preview)** (same script as local **`bun run preview`** / **`npm run preview`**). CI passes `VITE_APP_ORIGIN=https://pengine.net` as a **build-arg**. Pushes `:<tag>`, `:sha-<short>`, and `:latest`. If the package **already exists**, this job **skips** the build and logs that fact. **Packaging** loads `deploy/Dockerfile` via the **GitHub API** from the **default branch** (with fallbacks), then builds — so it always matches `main`, not an old copy on the tag. **`deploy/docker-compose.yml`** for the host is fetched the same way in the deploy job. **App sources** (`package.json`, `src/`, …) still come from the **tag** checkout.
 2. **Deploy to host** — fetches [`deploy/docker-compose.yml`](../../deploy/docker-compose.yml) via the **GitHub Contents API** (no checkout on the runner). It tries your **`tag`** ref first, then the **default branch**, **`main`**, **`master`**. **`PENGINE_WEB_IMAGE`** on the host still uses your **`tag`**. Then SSH copies the file to `~/pengine`, and the host runs **`docker login` → `docker compose pull` → `docker compose up`**.
 
-The app listens on **port 1420** inside the container (static-web-server — same
-as Vite dev in `vite.config.ts`). Add a **host** port mapping in
-`docker-compose.yml` if the reverse proxy runs on the same machine (e.g.
-`ports: "127.0.0.1:8080:1420"`). **TLS and reverse-proxy** for the public site are
+The app listens on **port 1422** inside the container (**Vite preview** — matches
+`preview.port` in `vite.config.ts`; dev server stays on **1420**). Add a **host**
+port mapping in `docker-compose.yml` if the reverse proxy runs on the same machine
+(e.g. `ports: "127.0.0.1:8080:1422"`). **TLS and reverse-proxy** for the public site are
 not defined in this repository — point nginx (or similar) at that upstream URL.
 
 ## Triggers
@@ -118,8 +118,8 @@ mkdir -p ~/pengine
 ```
 
 Configure your external reverse-proxy (from your other repository) to forward
-HTTPS traffic to the host port you mapped to container **1420** (for example
-`http://127.0.0.1:8080` if you use `8080:1420`).
+HTTPS traffic to the host port you mapped to container **1422** (for example
+`http://127.0.0.1:8080` if you use `8080:1422`).
 
 ## Verifying a deploy
 
@@ -137,6 +137,6 @@ already in GHCR (deploy-only), or rebuild from that git tag if needed.
 
 ```bash
 docker build -f deploy/Dockerfile --build-arg VITE_APP_ORIGIN=https://pengine.net -t pengine-web:local .
-docker run --rm -p 8080:1420 pengine-web:local
-# Open http://127.0.0.1:8080
+docker run --rm -p 1422:1422 pengine-web:local
+# Open http://localhost:1422/
 ```
