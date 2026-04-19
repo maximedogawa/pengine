@@ -5,14 +5,14 @@ ENV HUSKY=0
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm install --frozen-lockfile
 
 COPY . .
 
 ARG VITE_APP_ORIGIN=https://pengine.net
 ENV VITE_APP_ORIGIN=${VITE_APP_ORIGIN}
 
-RUN npm run build:web:ci
+RUN npm run build:web
 
 FROM node:22-alpine AS runner
 WORKDIR /app

@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build:web": "tsc && vite build",
-    "build:web:ci": "vite build",
     "build": "bun run build:web",
     "preview": "vite preview",
     "tauri": "tauri",
