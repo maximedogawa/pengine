@@ -5,7 +5,7 @@ ENV HUSKY=0
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm install --frozen-lockfile
+RUN npm i
 
 COPY . .
 
