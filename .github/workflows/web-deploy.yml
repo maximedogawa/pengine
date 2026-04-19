@@ -73,26 +73,39 @@ jobs:
           ref: ${{ steps.meta.outputs.ref }}
           fetch-depth: 1
 
-      # Always take deploy/ (Dockerfile, compose) from the default branch so packaging matches
-      # current CI. Old tags may ship a stale deploy/Dockerfile (e.g. still `bun run build:web` only);
-      # without this overlay the build uses that file. App sources remain the checked-out tag.
-      - name: Overlay deploy/ from default branch for Docker packaging
+      # Old tags often carry a stale deploy/Dockerfile. Git fetch+checkout of main is unreliable on
+      # shallow clones. Overwrite deploy/Dockerfile from the GitHub API (same as main’s file).
+      - name: Fetch deploy/Dockerfile from default branch (Contents API)
         if: steps.registry.outputs.exists != 'true'
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          DEF="${DEFAULT_BRANCH:-main}"
-          echo "Overlaying deploy/ from origin/${DEF} (app sources still at ref ${{ steps.meta.outputs.ref }})"
-          git fetch origin "${DEF}" --depth=1
-          git checkout FETCH_HEAD -- deploy/
-          test -f deploy/Dockerfile
-
-      - name: Verify Dockerfile for image build
-        if: steps.registry.outputs.exists != 'true'
-        run: |
-          set -euo pipefail
-          test -f deploy/Dockerfile
+          REPO="${{ github.repository }}"
+          TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          mkdir -p deploy
+          USED=""
+          for r in "${DEFAULT_BRANCH:-}" "main" "master"; do
+            [ -z "${r:-}" ] && continue
+            if curl -fsSL \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -o /tmp/dockerfile-api.json \
+              "https://api.github.com/repos/${REPO}/contents/deploy/Dockerfile?ref=${r}"; then
+              USED="$r"
+              echo "Fetched deploy/Dockerfile from ref: ${USED}"
+              break
+            fi
+            echo "No deploy/Dockerfile at ref=${r}, trying next…"
+          done
+          if [ -z "${USED}" ]; then
+            echo "::error::Could not fetch deploy/Dockerfile from API (tried default branch, main, master)."
+            exit 1
+          fi
+          jq -r .content /tmp/dockerfile-api.json | base64 -d > deploy/Dockerfile
+          test -s deploy/Dockerfile
+          echo "---- deploy/Dockerfile (lines 24–35) ----"
+          sed -n '24,35p' deploy/Dockerfile || true
 
       - name: Git short SHA
         if: steps.registry.outputs.exists != 'true'
