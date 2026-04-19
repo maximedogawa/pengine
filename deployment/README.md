@@ -29,3 +29,21 @@ docker compose -f ~/pengui/deployment/docker-compose.yml exec nginx \
 ## TLS
 
 If **`curl https://pengine.net/`** fails certificate verification, expand the Let’s Encrypt cert to include **`pengine.net`** (see Pengui `deployment/scripts/deploy.sh` / Certbot `--expand`).
+
+## Troubleshooting
+
+### `network pengui-network declared as external, but could not be found`
+
+The Pengine compose expects the **Pengui** stack to define that network (fixed name `pengui-network` in Pengui `docker-compose.yml`). **Create it and attach Pengui first:**
+
+```bash
+docker network create pengui-network 2>/dev/null || true
+cd ~/pengui/deployment && docker compose up -d
+docker network ls | grep pengui-network
+```
+
+Then start Pengine again: `docker compose up -d` in this directory.
+
+If Pengui still uses an **older** network name only (check `docker network ls` / `docker inspect pengui-nginx`), set in Pengine **`.env`**:
+
+`PENGUI_NETWORK_NAME=deployment_pengui-network` (use your actual network name).
