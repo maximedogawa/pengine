@@ -1,0 +1,14 @@
+# Used for `docker build -f deploy/Dockerfile .` (context is repo root).
+.git
+.github
+node_modules
+dist
+dist-ssr
+src-tauri
+test-results
+playwright-report
+e2e
+doc
+.claude
+*.md
+!README.md

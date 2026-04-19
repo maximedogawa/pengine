@@ -6,12 +6,30 @@ import { createPengineViteLogger } from "./vite/pengine-logger";
 
 const host = process.env.TAURI_DEV_HOST;
 
+/** Split heavy `node_modules` so no single chunk exceeds the default 500 kB warning. */
+function manualChunks(id: string): string | undefined {
+  if (!id.includes("node_modules")) return;
+  if (/\/(?:react\/|react-dom\/|scheduler\/)/.test(id)) return "react-vendor";
+  if (id.includes("react-router")) return "router";
+  if (id.includes("@radix-ui") || id.includes("@dnd-kit")) return "ui-vendor";
+  if (id.includes("@tauri-apps")) return "tauri";
+  if (id.includes("qrcode.react")) return "qrcode";
+  return undefined;
+}
+
 export default defineConfig(async () => {
   const clearScreen = false;
   return {
     customLogger: createPengineViteLogger("info", { allowClearScreen: clearScreen }),
     plugins: [tailwindcss(), react()],
     clearScreen,
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks,
+        },
+      },
+    },
   server: {
     port: 1420,
     strictPort: true,
@@ -27,5 +45,10 @@ export default defineConfig(async () => {
       ignored: ["**/src-tauri/**"],
     },
   },
+    // Production build preview — not Vite’s default 4173 (avoids clashes e.g. with other Vite apps / tooling); adjacent to dev :1420.
+    preview: {
+      port: 1422,
+      strictPort: true,
+    },
   };
 });

@@ -1,0 +1,138 @@
+name: Deploy web app
+
+# Build the pengine web image, publish to GHCR, and roll it out on the deploy
+# host via docker compose under ~/pengine. This workflow only updates the app
+# container (static bundle on :80 → 127.0.0.1:1420). Reverse-proxy / nginx /
+# TLS for the public site is configured elsewhere (another repository).
+#
+# Triggers:
+#   - Push a tag matching v* → builds and deploys that tag
+#   - Manual dispatch → pick a tag to redeploy
+#
+# Required repo secrets:
+#   DEPLOY_HOST     — hostname or IP of the deploy target
+#   DEPLOY_USER     — SSH user on the deploy target
+#   DEPLOY_SSH_KEY  — private SSH key (PEM) authorized on the target
+# Optional:
+#   DEPLOY_HOST_KNOWN_HOSTS — verified known_hosts line(s); if unset, CI uses ssh-keyscan
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to deploy (e.g. v1.0.1)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/pengine-web
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.ref.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tag push: github.ref; manual: workflow input (otherwise default branch would build)
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: ver
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          build-args: |
+            VITE_APP_ORIGIN=https://pengine.net
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
+            ${{ env.IMAGE }}:latest
+
+      - name: Export image ref
+        id: ref
+        run: echo "image_ref=${{ env.IMAGE }}@${{ steps.build.outputs.digest }}" >>"$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust host key
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_HOST_KNOWN_HOSTS: ${{ secrets.DEPLOY_HOST_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "${DEPLOY_HOST_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$DEPLOY_HOST_KNOWN_HOSTS" >>~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "$DEPLOY_HOST" >>~/.ssh/known_hosts 2>/dev/null \
+              || { echo "ssh-keyscan failed; set optional DEPLOY_HOST_KNOWN_HOSTS to pin the host key." >&2; exit 1; }
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy docker-compose.yml to host
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'mkdir -p ~/pengine'
+          scp deploy/docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:~/pengine/docker-compose.yml"
+
+      - name: Pull and restart
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_USER: ${{ github.repository_owner }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ needs.build.outputs.image_ref }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" \
+            GHCR_USER="$GHCR_USER" \
+            GHCR_TOKEN="$GHCR_TOKEN" \
+            PENGINE_WEB_IMAGE="$IMAGE_REF" \
+            'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd ~/pengine
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          export PENGINE_WEB_IMAGE
+          docker compose pull
+          docker compose up -d --remove-orphans
+          docker image prune -f
+          REMOTE
