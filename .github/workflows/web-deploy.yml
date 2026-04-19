@@ -73,12 +73,15 @@ jobs:
           ref: ${{ steps.meta.outputs.ref }}
           fetch-depth: 1
 
-      - name: Verify deploy assets
+      - name: Verify Dockerfile for image build
         if: steps.registry.outputs.exists != 'true'
         run: |
           set -euo pipefail
-          test -f deploy/Dockerfile
-          test -f deploy/docker-compose.yml
+          test -f deploy/Dockerfile || {
+            echo "::error::deploy/Dockerfile missing at ref ${{ steps.meta.outputs.ref }}. Use a tag/branch that includes deploy/Dockerfile."
+            ls -la deploy 2>/dev/null || ls -la
+            exit 1
+          }
 
       - name: Git short SHA
         if: steps.registry.outputs.exists != 'true'
