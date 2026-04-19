@@ -1,3 +1,6 @@
+# Pengine web + Pengui on the same host: publish 1422 on all interfaces (not 127.0.0.1-only)
+# so Pengui nginx (Docker) can reach this via http://host.docker.internal:1422/
+# and you can curl http://127.0.0.1:1422/ on the host.
 services:
   pengine-web:
     image: ${PENGINE_WEB_IMAGE:-ghcr.io/pengine-ai/pengine-web:latest}
@@ -6,8 +9,8 @@ services:
     restart: unless-stopped
     # Vite preview — serves `dist/` (must match deploy/Dockerfile CMD).
     command: ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "1422"]
-    expose:
-      - "1422"
+    ports:
+      - "1422:1422"
     environment:
       - NODE_ENV=production
     healthcheck:
