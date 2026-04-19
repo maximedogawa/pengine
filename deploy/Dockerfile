@@ -24,7 +24,17 @@ COPY . .
 ARG VITE_APP_ORIGIN=https://pengine.net
 ENV VITE_APP_ORIGIN=${VITE_APP_ORIGIN}
 
-RUN npm run build:ci
+# CI may inject this file from `main` while `package.json` comes from an older tag without
+# `build:ci` / `build:web`. Prefer those scripts when present; otherwise match `build:web` (`tsc` + vite).
+RUN node -e "\
+const fs = require('fs');\
+const { execSync } = require('child_process');\
+const s = JSON.parse(fs.readFileSync('package.json', 'utf8')).scripts || {};\
+const cmd = s['build:ci'] ? 'npm run build:ci'\
+  : s['build:web'] ? 'npm run build:web'\
+  : 'npx tsc && npx vite build';\
+execSync(cmd, { stdio: 'inherit', shell: '/bin/sh' });\
+"
 
 FROM ghcr.io/static-web-server/static-web-server:2-alpine
 USER root
