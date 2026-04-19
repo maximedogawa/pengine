@@ -1,19 +1,28 @@
-# Runs the pengine web image on the deploy host (plain HTTP on :80 in-container,
-# published to 127.0.0.1:1420). Reverse-proxy / TLS is not part of this repo —
-# configure that in your ops repo (e.g. nginx → http://127.0.0.1:1420).
-#
-# PENGINE_WEB_IMAGE is set by CI (e.g. ghcr.io/<owner>/pengine-web:1.0.1).
-# Docker Compose substitutes it from the environment at `up` time.
-
 services:
-  web:
-    image: ${PENGINE_WEB_IMAGE:?PENGINE_WEB_IMAGE is required}
-    container_name: pengine
+  pengine-web:
+    image: ${PENGINE_WEB_IMAGE:-ghcr.io/pengine-ai/pengine-web:latest}
+    container_name: pengine-app
+    hostname: pengine
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:1420:80"
+    # Vite preview — serves `dist/` (must match deploy/Dockerfile CMD).
+    command: ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "1422"]
+    expose:
+      - "1422"
+    environment:
+      - NODE_ENV=production
+    networks:
+      pengui-network:
+        aliases:
+          - pengine
+          - app
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:1422/"]
       interval: 30s
-      timeout: 3s
+      timeout: 5s
       retries: 3
+      start_period: 25s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

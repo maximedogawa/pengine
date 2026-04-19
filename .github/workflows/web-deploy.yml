@@ -1,13 +1,9 @@
 name: Deploy web app
-
-# Job 1: If ghcr.io/.../pengine-web:<tag> is missing → checkout, build, push to GHCR.
-# Job 2: Fetch compose (API), SSH → docker compose pull + up.
-
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Registry / deploy tag (e.g. 1.0.2). Git ref for build must exist when the image is not yet in GHCR."
+        description: "Git tag / registry tag (e.g. 1.0.2). Image is built and pushed every run."
         required: true
         type: string
 
@@ -24,7 +20,7 @@ env:
 
 jobs:
   build-package:
-    name: Build and push image (if not in GHCR)
+    name: Build and push image
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -48,73 +44,18 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check if package already exists in GHCR
-        id: registry
-        env:
-          TAG: ${{ steps.meta.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if docker buildx imagetools inspect "${{ env.IMAGE }}:${TAG}" >/dev/null 2>&1; then
-            echo "exists=true" >>"$GITHUB_OUTPUT"
-            echo "Package ${{ env.IMAGE }}:${TAG} already in GHCR — skipping build and push."
-          else
-            echo "exists=false" >>"$GITHUB_OUTPUT"
-            echo "Package ${{ env.IMAGE }}:${TAG} not in GHCR — will build and push."
-          fi
-
-      - name: No build needed
-        if: steps.registry.outputs.exists == 'true'
-        run: |
-          echo "Skipping Docker build; using existing image from registry."
-
       - uses: actions/checkout@v4
-        if: steps.registry.outputs.exists != 'true'
         with:
           ref: ${{ steps.meta.outputs.ref }}
           fetch-depth: 1
 
-      # Old tags often carry a stale deploy/Dockerfile. Git fetch+checkout of main is unreliable on
-      # shallow clones. Overwrite deploy/Dockerfile from the GitHub API (same as main’s file).
-      - name: Fetch deploy/Dockerfile from default branch (Contents API)
-        if: steps.registry.outputs.exists != 'true'
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          REPO="${{ github.repository }}"
-          TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          mkdir -p deploy
-          USED=""
-          for r in "${DEFAULT_BRANCH:-}" "main" "master"; do
-            [ -z "${r:-}" ] && continue
-            if curl -fsSL \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -o /tmp/dockerfile-api.json \
-              "https://api.github.com/repos/${REPO}/contents/deploy/Dockerfile?ref=${r}"; then
-              USED="$r"
-              echo "Fetched deploy/Dockerfile from ref: ${USED}"
-              break
-            fi
-            echo "No deploy/Dockerfile at ref=${r}, trying next…"
-          done
-          if [ -z "${USED}" ]; then
-            echo "::error::Could not fetch deploy/Dockerfile from API (tried default branch, main, master)."
-            exit 1
-          fi
-          jq -r .content /tmp/dockerfile-api.json | base64 -d > deploy/Dockerfile
-          test -s deploy/Dockerfile
-
       - name: Git short SHA
-        if: steps.registry.outputs.exists != 'true'
         id: git
         run: echo "short=$(git rev-parse --short HEAD)" >>"$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
-        if: steps.registry.outputs.exists != 'true'
 
       - name: Build and push package to GHCR
-        if: steps.registry.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -136,34 +77,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Fetch deploy/docker-compose.yml (Contents API)
-        env:
-          REF: ${{ needs.build-package.outputs.ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          REPO="${{ github.repository }}"
-          TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          USED=""
-          for r in "${REF}" "${DEFAULT_BRANCH}" "main" "master"; do
-            [ -z "${r:-}" ] && continue
-            if curl -fsSL \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -o /tmp/compose-api.json \
-              "https://api.github.com/repos/${REPO}/contents/deploy/docker-compose.yml?ref=${r}"; then
-              USED="$r"
-              echo "Fetched deploy/docker-compose.yml from ref: ${USED}"
-              break
-            fi
-            echo "No deploy/docker-compose.yml at ref=${r} (404 or no access), trying fallback…"
-          done
-          if [ -z "${USED}" ]; then
-            echo "::error::Could not fetch deploy/docker-compose.yml (tried tag/branch '${REF}', default branch, main, master)."
-            exit 1
-          fi
-          jq -r .content /tmp/compose-api.json | base64 -d > docker-compose.upload.yml
-          test -s docker-compose.upload.yml
+      # Need repo files for scp (deploy job does not inherit build-package checkout).
+      - uses: actions/checkout@v4
 
       - name: Ensure remote directory
         uses: appleboy/ssh-action@v1.2.5
@@ -183,11 +98,11 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: 22
           timeout: 2m
-          source: "docker-compose.upload.yml"
-          target: "~/pengine/"
+          source: deploy/docker-compose.yml
+          target: ~/pengine/
           overwrite: true
 
-      - name: SSH — docker compose pull on host
+      - name: SSH — docker login, compose pull, up
         uses: appleboy/ssh-action@v1.2.5
         env:
           GHCR_USER: ${{ github.repository_owner }}
@@ -203,7 +118,6 @@ jobs:
           envs: GHCR_USER,GHCR_TOKEN,PENGINE_WEB_IMAGE
           script: |
             set -euo pipefail
-            mv -f ~/pengine/docker-compose.upload.yml ~/pengine/docker-compose.yml
             cd ~/pengine
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             export PENGINE_WEB_IMAGE
