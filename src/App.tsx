@@ -1,10 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { getPengineHealth } from "./modules/bot/api";
 import { useAppSessionStore } from "./modules/bot/store/appSessionStore";
-import { DashboardPage } from "./pages/DashboardPage";
-import { LandingPage } from "./pages/LandingPage";
-import { SetupPage } from "./pages/SetupPage";
+
+const LandingPage = lazy(() =>
+  import("./pages/LandingPage").then((m) => ({ default: m.LandingPage })),
+);
+const SetupPage = lazy(() => import("./pages/SetupPage").then((m) => ({ default: m.SetupPage })));
+const DashboardPage = lazy(() =>
+  import("./pages/DashboardPage").then((m) => ({ default: m.DashboardPage })),
+);
+
+function RoutePageFallback() {
+  return (
+    <div
+      className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-400"
+      data-testid="route-chunk-loading"
+    >
+      <p className="font-mono text-xs uppercase tracking-[0.2em]">Loading…</p>
+    </div>
+  );
+}
 
 /** One-shot: sync dashboard route with persisted session or running local app. */
 function StartupDashboardRedirect() {
@@ -76,12 +92,14 @@ function App() {
   return (
     <div data-testid="app-ready">
       <StartupDashboardRedirect />
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/setup" element={<SetupPage />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Suspense fallback={<RoutePageFallback />}>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/setup" element={<SetupPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     </div>
   );
 }

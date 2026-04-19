@@ -55,6 +55,7 @@ Product overview: [../README.md](../README.md).
 | [guides/skills.md](guides/skills.md) | Skills vs MCP, Dashboard behavior, `SKILL.md` / `mandatory.md`, context cap, troubleshooting |
 | [guides/custom-mcp-tools.md](guides/custom-mcp-tools.md) | Concepts, dashboard vs API, `mcp.json` paths, stdio fields, Docker/custom tools, pitfalls |
 | [guides/releasing.md](guides/releasing.md) | Tag-driven release pipeline, code signing/notarization explained, how to obtain Apple + Windows secrets |
+| [guides/deploying-web.md](guides/deploying-web.md) | Web-app deploy pipeline: GHCR image + SSH docker-compose rollout to the host |
 
 ### Tool Engine (maintainers)
 

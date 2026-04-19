@@ -1,0 +1,20 @@
+# Runs the pengine web image on the deploy host (plain HTTP on :80 in-container,
+# published to 127.0.0.1:1420). Reverse-proxy / TLS is not part of this repo —
+# configure that in your ops repo (e.g. nginx → http://127.0.0.1:1420).
+#
+# PENGINE_WEB_IMAGE is set by the GitHub Actions deploy step to the image
+# reference being rolled out (e.g. ghcr.io/pengine-ai/pengine-web:v1.0.1).
+# Docker Compose substitutes it from the environment at `up` time.
+
+services:
+  web:
+    image: ${PENGINE_WEB_IMAGE:?PENGINE_WEB_IMAGE is required}
+    container_name: pengine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1420:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

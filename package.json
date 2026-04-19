@@ -1,11 +1,12 @@
 {
   "name": "pengine",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build:web": "tsc && vite build",
+    "build": "bun run build:web",
     "preview": "vite preview",
     "tauri": "tauri",
     "test:e2e": "playwright test",
