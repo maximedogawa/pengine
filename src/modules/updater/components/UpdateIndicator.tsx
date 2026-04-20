@@ -10,7 +10,7 @@ export function UpdateIndicator({ currentVersion }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    void getLatestRelease().then((r) => {
+    void getLatestRelease({ force: true }).then((r) => {
       if (!cancelled) setRelease(r);
     });
     return () => {
