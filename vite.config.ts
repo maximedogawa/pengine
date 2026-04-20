@@ -30,21 +30,21 @@ export default defineConfig(async () => {
         },
       },
     },
-  server: {
-    port: 1420,
-    strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
-    watch: {
-      ignored: ["**/src-tauri/**"],
+    server: {
+      port: 1420,
+      strictPort: true,
+      host: host || false,
+      hmr: host
+        ? {
+            protocol: "ws",
+            host,
+            port: 1421,
+          }
+        : undefined,
+      watch: {
+        ignored: ["**/src-tauri/**"],
+      },
     },
-  },
     // Production build preview — not Vite’s default 4173 (avoids clashes e.g. with other Vite apps / tooling); adjacent to dev :1420.
     preview: {
       port: 1422,
@@ -52,6 +52,7 @@ export default defineConfig(async () => {
       // Required when nginx (or any reverse proxy) sends Host: pengine.net — Vite 7 blocks unknown hosts by default.
       allowedHosts: [
         "pengine.net",
+        "penguinpool.space",
         "localhost",
         "127.0.0.1",
         ...(process.env.VITE_PREVIEW_ALLOWED_HOSTS?.split(",")

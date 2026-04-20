@@ -22,6 +22,12 @@ curl -fsS http://127.0.0.1:1422/ | head
 
 Configure **`PENGINE_SUBDOMAIN`** on the **Pengui** repo (Certbot + nginx vhost); see Pengui `deployment/README.md`.
 
+If the browser warns that the certificate is for **`penguinpool.space`** (or another hostname) when you open **`https://pengine.net`**, nginx is serving a **default TLS certificate** that does not list **`pengine.net`** in **Subject Alternative Name**. Fix it on the server:
+
+1. Confirm DNS **`A`/`AAAA`** for `pengine.net` points at this host.
+2. Obtain a certificate that **includes `pengine.net`** (e.g. Certbot: add `-d pengine.net` to the existing certificate request, or run a separate cert for `pengine.net` and point the `pengine.net` `server` block at those files).
+3. Reload nginx so the `server_name pengine.net` block uses that certificate (not the pool-only cert).
+
 ## Remove the container and pull a fresh image
 
 Use this after a new image tag is published, if the container is stuck, or you want to clear the cached local image.
