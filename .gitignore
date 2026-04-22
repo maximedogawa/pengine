@@ -27,3 +27,7 @@ src-tauri/mcp.json
 *.sw?
 playwright-report/
 test-results/
+
+.env
+# Apple signing
+certificate-base64.txt
