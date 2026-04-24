@@ -242,11 +242,7 @@ fn render_reply_indented(sink: &dyn OutputSink, reply: &CliReply) {
 }
 
 /// When stdout is a TTY, paint fenced code with a dark theme; otherwise indent as plain text.
-fn try_render_highlighted_code_block(
-    sink: &dyn OutputSink,
-    reply: &CliReply,
-    first: FirstPrefix,
-) {
+fn try_render_highlighted_code_block(sink: &dyn OutputSink, reply: &CliReply, first: FirstPrefix) {
     let ReplyKind::CodeBlock { lang } = &reply.kind else {
         render_with_prefix(sink, reply, first);
         return;

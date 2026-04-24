@@ -151,19 +151,11 @@ fn model_catalog_index_token(token: &str, len: usize) -> Option<usize> {
     }
 }
 
-fn format_model_catalog_list(
-    catalog: &ollama::ModelCatalog,
-    preferred: Option<&str>,
-) -> String {
+fn format_model_catalog_list(catalog: &ollama::ModelCatalog, preferred: Option<&str>) -> String {
     let n = catalog.models.len();
     let pref_s = preferred.unwrap_or("<none>");
-    let active_s = catalog
-        .active
-        .as_deref()
-        .unwrap_or("<none>");
-    let mut out = format!(
-        "ollama models ({n}):  preferred={pref_s}  daemon_active={active_s}\n",
-    );
+    let active_s = catalog.active.as_deref().unwrap_or("<none>");
+    let mut out = format!("ollama models ({n}):  preferred={pref_s}  daemon_active={active_s}\n",);
     if n == 0 {
         out.push_str("(no models returned — is `ollama serve` running?)\n");
     } else {
@@ -246,7 +238,9 @@ pub async fn model(state: &AppState, name: Option<&str>, clear: bool) -> CliRepl
 
     let mut reply = apply_preferred_model(state, entry).await;
     if activate_in_ollama {
-        reply.body.push_str("\nollama: model loaded (daemon active in /api/ps)");
+        reply
+            .body
+            .push_str("\nollama: model loaded (daemon active in /api/ps)");
     }
     reply
 }

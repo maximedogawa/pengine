@@ -223,10 +223,7 @@ pub async fn touch_activate_model(model: &str) -> Result<(), String> {
     let status = resp.status();
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        let err = body
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
         return Err(if err.is_empty() {
             format!("ollama chat HTTP {status}")
         } else {
