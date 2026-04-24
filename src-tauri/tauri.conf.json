@@ -50,11 +50,11 @@
           ]
         },
         "model": {
-          "description": "Show or set the preferred Ollama model",
+          "description": "List Ollama models; set preferred by name, or by 1-based index (also loads that model in Ollama); --clear",
           "args": [
             {
               "name": "name",
-              "description": "Model name; pass --clear to unset",
+              "description": "Model name, or 1-based row # from `pengine model` (loads in Ollama); --clear to unset",
               "takesValue": true,
               "index": 1
             },

@@ -13,7 +13,7 @@ use crate::infrastructure::bot_lifecycle;
 use crate::modules::agent;
 use crate::modules::bot::{repository as bot_repo, token_verify};
 use crate::modules::mcp::service as mcp_service;
-use crate::modules::ollama::service as ollama;
+use crate::modules::ollama::service::{self as ollama, ModelInfo};
 use crate::modules::secure_store;
 use crate::modules::skills::service as skills_service;
 use crate::shared::state::{AppState, ConnectionData, ConnectionMetadata, LogEntry};
@@ -138,36 +138,64 @@ pub async fn config(state: &AppState, kvs: &[String]) -> CliReply {
     CliReply::code("bash", format!("updated: {}", applied.join(", ")))
 }
 
-/// `model` — show (no args) or set the preferred Ollama model.
-/// Mirrors the validation in `handle_ollama_model_put` in `http_server.rs`.
-pub async fn model(state: &AppState, name: Option<&str>, clear: bool) -> CliReply {
-    if clear {
-        *state.preferred_ollama_model.write().await = None;
-        return CliReply::code("bash", "preferred model cleared (uses active model)");
+/// If `token` is all ASCII digits and parses to `1..=len`, returns a **0-based** index.
+fn model_catalog_index_token(token: &str, len: usize) -> Option<usize> {
+    if len == 0 || token.is_empty() || !token.chars().all(|c| c.is_ascii_digit()) {
+        return None;
     }
-    let Some(name) = name else {
-        let preferred = state
-            .preferred_ollama_model
-            .read()
-            .await
-            .clone()
-            .unwrap_or_else(|| "<none>".to_string());
-        let active = ollama::active_model()
-            .await
-            .unwrap_or_else(|e| format!("<unreachable: {e}>"));
-        return CliReply::code("bash", format!("preferred={preferred}\nactive={active}"));
-    };
-    let name = name.trim();
-    if name.is_empty() {
-        return CliReply::error("model: name is empty (use --clear to unset)");
+    let n: usize = token.parse().ok()?;
+    if n >= 1 && n <= len {
+        Some(n - 1)
+    } else {
+        None
     }
-    let catalog = match ollama::model_catalog(3000).await {
-        Ok(c) => c,
-        Err(e) => return CliReply::error(format!("ollama catalog: {e}")),
-    };
-    let Some(entry) = catalog.models.iter().find(|m| m.name == name) else {
-        return CliReply::error(format!("model `{name}` is not available in Ollama"));
-    };
+}
+
+fn format_model_catalog_list(
+    catalog: &ollama::ModelCatalog,
+    preferred: Option<&str>,
+) -> String {
+    let n = catalog.models.len();
+    let pref_s = preferred.unwrap_or("<none>");
+    let active_s = catalog
+        .active
+        .as_deref()
+        .unwrap_or("<none>");
+    let mut out = format!(
+        "ollama models ({n}):  preferred={pref_s}  daemon_active={active_s}\n",
+    );
+    if n == 0 {
+        out.push_str("(no models returned — is `ollama serve` running?)\n");
+    } else {
+        for (i, m) in catalog.models.iter().enumerate() {
+            let mut tags: Vec<&'static str> = Vec::new();
+            if catalog.active.as_deref() == Some(m.name.as_str()) {
+                tags.push("active");
+            }
+            if preferred == Some(m.name.as_str()) {
+                tags.push("preferred");
+            }
+            let tag = if tags.is_empty() {
+                String::new()
+            } else {
+                format!("  [{}]", tags.join(", "))
+            };
+            out.push_str(&format!(
+                "  {:>3}  {} ({}){tag}\n",
+                i + 1,
+                m.name,
+                m.kind.as_str(),
+            ));
+        }
+    }
+    out.push_str("\nSet preferred: /model <name>  (same as `pengine model …`)\n");
+    out.push_str("Set preferred + load in Ollama: /model <#>  (1-based row from this list)\n");
+    out.push_str("Clear: /model --clear");
+    out
+}
+
+async fn apply_preferred_model(state: &AppState, entry: &ModelInfo) -> CliReply {
+    let name = entry.name.as_str();
     *state.preferred_ollama_model.write().await = Some(name.to_string());
     if entry.kind == ollama::ModelKind::Local {
         *state.last_local_model.write().await = Some(name.to_string());
@@ -176,6 +204,51 @@ pub async fn model(state: &AppState, name: Option<&str>, clear: bool) -> CliRepl
         .emit_log("run", &format!("ollama model set to '{name}' (cli)"))
         .await;
     CliReply::code("bash", format!("preferred model set to {name}"))
+}
+
+/// `model` — list models (no args), set preferred by **name** or **1-based #** from the list, or `--clear`.
+/// Selecting by **#** also asks Ollama to load that model so it becomes **daemon active** (`/api/ps`).
+/// Mirrors the validation in `handle_ollama_model_put` in `http_server.rs`.
+pub async fn model(state: &AppState, name: Option<&str>, clear: bool) -> CliReply {
+    if clear {
+        *state.preferred_ollama_model.write().await = None;
+        return CliReply::code("bash", "preferred model cleared (uses active model)");
+    }
+    let catalog = match ollama::model_catalog(3000).await {
+        Ok(c) => c,
+        Err(e) => return CliReply::error(format!("ollama catalog: {e}")),
+    };
+    let preferred = state.preferred_ollama_model.read().await.clone();
+    let preferred_ref = preferred.as_deref();
+
+    let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) else {
+        let body = format_model_catalog_list(&catalog, preferred_ref);
+        return CliReply::code("bash", body);
+    };
+
+    let (entry, activate_in_ollama) =
+        if let Some(idx) = model_catalog_index_token(name, catalog.models.len()) {
+            (&catalog.models[idx], true)
+        } else if let Some(e) = catalog.models.iter().find(|m| m.name == name) {
+            (e, false)
+        } else {
+            return CliReply::error(format!("model `{name}` is not available in Ollama"));
+        };
+
+    if activate_in_ollama {
+        if let Err(e) = ollama::touch_activate_model(entry.name.as_str()).await {
+            return CliReply::error(format!(
+                "ollama: could not load model `{}` as daemon active: {e}",
+                entry.name
+            ));
+        }
+    }
+
+    let mut reply = apply_preferred_model(state, entry).await;
+    if activate_in_ollama {
+        reply.body.push_str("\nollama: model loaded (daemon active in /api/ps)");
+    }
+    reply
 }
 
 /// `bot connect <token>` — verify, persist, save keychain. Does NOT spawn the
@@ -656,5 +729,20 @@ mod tests {
     fn format_audit_line_skips_garbage() {
         assert!(format_audit_ndjson_line("not-json").is_none());
         assert!(format_audit_ndjson_line("").is_none());
+    }
+
+    #[test]
+    fn model_catalog_index_token_parses_one_based() {
+        assert_eq!(super::model_catalog_index_token("1", 3), Some(0));
+        assert_eq!(super::model_catalog_index_token("3", 3), Some(2));
+        assert_eq!(super::model_catalog_index_token("0", 3), None);
+        assert_eq!(super::model_catalog_index_token("4", 3), None);
+        assert_eq!(super::model_catalog_index_token("02", 3), Some(1));
+    }
+
+    #[test]
+    fn model_catalog_index_token_rejects_non_digits() {
+        assert_eq!(super::model_catalog_index_token("llama3", 3), None);
+        assert_eq!(super::model_catalog_index_token("1a", 3), None);
     }
 }

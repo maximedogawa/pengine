@@ -72,16 +72,13 @@ fn path_export_hint(shim_dir: &Path) -> String {
     #[cfg(unix)]
     {
         format!(
-            "Add to ~/.zshrc or ~/.bashrc: export PATH=\"$HOME/.local/bin:$PATH\"  (launcher dir: {})",
+            "export PATH=\"{}:$PATH\" · add once to ~/.zshrc or ~/.bashrc",
             shim_dir.display()
         )
     }
     #[cfg(windows)]
     {
-        format!(
-            "Add this folder to your user PATH: {}  (Settings → System → About → Advanced system settings → Environment Variables)",
-            shim_dir.display()
-        )
+        format!("Add to user PATH: {}", shim_dir.display())
     }
 }
 

@@ -38,11 +38,7 @@ export function CliCommandsPanel() {
       setShimBusy(false);
       if (r.ok) {
         setShim(r.status);
-        setShimMsg(
-          r.status.localBinOnPath
-            ? "On PATH. In a new terminal: pengine-cli or pengine-cli app"
-            : "Installed. Add the folder to PATH (see hint below), then: pengine-cli or pengine-cli app",
-        );
+        setShimMsg(r.status.localBinOnPath ? "On PATH." : "Installed.");
       } else {
         setShimMsg(r.error);
       }
@@ -51,7 +47,7 @@ export function CliCommandsPanel() {
       setShimBusy(false);
       if (r.ok) {
         await refreshShim();
-        setShimMsg("CLI launcher removed from PATH.");
+        setShimMsg("Removed.");
       } else {
         setShimMsg(r.error);
       }
@@ -65,13 +61,9 @@ export function CliCommandsPanel() {
       {isTauriApp() && (
         <div className="mt-3 rounded-lg border border-cyan-300/15 bg-cyan-300/5 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="font-mono text-[11px] font-semibold text-cyan-100/90">CLI on PATH</p>
-              <p className="mt-0.5 font-mono text-[10px] text-white/45">
-                {shim?.installed ? "Installed" : "Not installed"} — adds or removes the{" "}
-                <code className="text-white/55">pengine-cli</code> launcher file.
-              </p>
-            </div>
+            <p className="min-w-0 font-mono text-[11px] font-semibold text-cyan-100/90">
+              CLI on PATH
+            </p>
             <button
               type="button"
               role="switch"
@@ -101,33 +93,25 @@ export function CliCommandsPanel() {
             <p className="mt-2 font-mono text-[11px] text-white/40">Loading…</p>
           )}
           {shim && (
-            <>
-              <p className="mt-2 font-mono text-[10px] text-white/40">
-                Launcher file: <code className="text-white/60">{shim.shimPath}</code>
-              </p>
+            <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-white/45">
+              <div className="text-white/50">{shim.shimPath}</div>
               {shim.installed && shim.resolvesTo && (
-                <p
-                  className="mt-1 break-all font-mono text-[10px] text-white/35"
-                  title={shim.resolvesTo}
-                >
+                <div className="text-white/35" title={shim.resolvesTo}>
                   → {shim.resolvesTo}
-                </p>
+                </div>
               )}
               {!shim.localBinOnPath && (
-                <p className="mt-2 font-mono text-[10px] leading-relaxed text-amber-200/80 sm:text-[11px]">
-                  {shim.pathExportHint}
-                </p>
+                <p className="pt-1 text-amber-200/75">{shim.pathExportHint}</p>
               )}
-            </>
+            </div>
           )}
           {shimMsg && <p className="mt-2 font-mono text-[11px] text-white/70">{shimMsg}</p>}
         </div>
       )}
 
       {!isTauriApp() && (
-        <p className="mt-3 font-mono text-[10px] leading-relaxed text-white/40 sm:text-[11px]">
-          Open this dashboard in the <strong className="text-white/60">desktop app</strong> to turn
-          CLI on PATH on or off.
+        <p className="mt-3 font-mono text-[10px] text-white/40">
+          Use the desktop app for this toggle.
         </p>
       )}
     </div>

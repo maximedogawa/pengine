@@ -22,4 +22,5 @@ pub mod output;
 pub mod repl;
 pub mod router;
 pub mod shim;
+pub mod syntax_highlight;
 pub mod telegram_bridge;

@@ -38,7 +38,7 @@ pub const COMMANDS: &[NativeCommand] = &[
     },
     NativeCommand {
         name: "model",
-        summary: "Show or set the preferred Ollama model.",
+        summary: "List Ollama models; set preferred by name, or by # (loads model as daemon active); --clear.",
     },
     NativeCommand {
         name: "bot",

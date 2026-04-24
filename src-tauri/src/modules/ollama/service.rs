@@ -197,6 +197,50 @@ pub async fn active_model() -> Result<String, String> {
         .ok_or_else(|| "no models pulled in ollama".to_string())
 }
 
+/// Load `model` in the Ollama daemon so `/api/ps` reports it (same as a first chat turn).
+///
+/// Uses a minimal `/api/chat` request with `num_predict: 1`. Large models may take
+/// minutes on first load; timeout is generous.
+pub async fn touch_activate_model(model: &str) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": " "}],
+        "stream": false,
+        "keep_alive": "30m",
+        "options": {
+            "num_predict": 1,
+            "num_ctx": 2048
+        }
+    });
+    let timeout = std::time::Duration::from_secs(300);
+    let resp = http_client()
+        .post(OLLAMA_CHAT_URL)
+        .json(&payload)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let err = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return Err(if err.is_empty() {
+            format!("ollama chat HTTP {status}")
+        } else {
+            format!("ollama chat HTTP {status}: {err}")
+        });
+    }
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        if !err.is_empty() {
+            return Err(err.to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Detect cloud-side failures that warrant downgrading to a local model.
 /// Covers explicit rate limits (429 / "rate limit" / "quota"), upstream
 /// outages proxied as 5xx with the cloud's `ref: <uuid>` envelope, and the

@@ -4,9 +4,10 @@
 //! chunking) belongs to sinks. This keeps handlers transport-agnostic and
 //! lets a single change to `TelegramSink` affect every reply at once.
 
+use regex::Regex;
 use serde::Serialize;
 use std::io::{IsTerminal, Write};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -121,8 +122,22 @@ impl OutputSink for TerminalSink {
                     eprintln!("{}", reply.body);
                 }
             }
-            ReplyKind::CodeBlock { .. } | ReplyKind::Log => {
-                // Print raw — terminal rendering speaks for itself without fences.
+            ReplyKind::CodeBlock { lang } => {
+                if self.color {
+                    if let Some(lines) =
+                        super::syntax_highlight::highlight_fence_body(lang, &reply.body)
+                    {
+                        for line in &lines {
+                            println!("{line}\x1b[0m");
+                        }
+                    } else {
+                        println!("{}", reply.body);
+                    }
+                } else {
+                    println!("{}", reply.body);
+                }
+            }
+            ReplyKind::Log => {
                 println!("{}", reply.body);
             }
             ReplyKind::Diff => {
@@ -211,10 +226,55 @@ fn render_reply_indented(sink: &dyn OutputSink, reply: &CliReply) {
                 } else {
                     FirstPrefix::None
                 };
-                render_with_prefix(sink, part, prefix);
+                match &part.kind {
+                    ReplyKind::CodeBlock { .. } => {
+                        try_render_highlighted_code_block(sink, part, prefix);
+                    }
+                    _ => render_with_prefix(sink, part, prefix),
+                }
             }
         }
+        ReplyKind::CodeBlock { .. } => {
+            try_render_highlighted_code_block(sink, reply, FirstPrefix::Repl);
+        }
         _ => render_with_prefix(sink, reply, FirstPrefix::Repl),
+    }
+}
+
+/// When stdout is a TTY, paint fenced code with a dark theme; otherwise indent as plain text.
+fn try_render_highlighted_code_block(
+    sink: &dyn OutputSink,
+    reply: &CliReply,
+    first: FirstPrefix,
+) {
+    let ReplyKind::CodeBlock { lang } = &reply.kind else {
+        render_with_prefix(sink, reply, first);
+        return;
+    };
+    if is_terminal_stdout() {
+        if let Some(lines) = super::syntax_highlight::highlight_fence_body(lang, &reply.body) {
+            print_highlighted_lines_prefixed(&lines, first);
+            return;
+        }
+    }
+    render_with_prefix(sink, reply, first);
+}
+
+fn print_highlighted_lines_prefixed(lines: &[String], first: FirstPrefix) {
+    let color = is_terminal_stdout();
+    let (first_p, cont_p) = match first {
+        FirstPrefix::Repl => {
+            if color {
+                (REPL_FIRST_PREFIX, REPL_CONT_PREFIX)
+            } else {
+                (REPL_FIRST_PREFIX_PLAIN, REPL_CONT_PREFIX)
+            }
+        }
+        FirstPrefix::None => (REPL_CONT_PREFIX, REPL_CONT_PREFIX),
+    };
+    for (i, line) in lines.iter().enumerate() {
+        let p = if i == 0 { first_p } else { cont_p };
+        println!("{p}{line}\x1b[0m");
     }
 }
 
@@ -267,35 +327,43 @@ fn indent_body(body: &str, first_prefix: &str, cont_prefix: &str) -> String {
     out
 }
 
-/// Pull `` ```diff\n…\n``` `` blocks out of a text body. Surrounding text
-/// stays as `Text` replies. Missing closers or no fences → single `Text`.
+static MD_FENCE_RE: OnceLock<Regex> = OnceLock::new();
+
+fn md_fence_regex() -> &'static Regex {
+    MD_FENCE_RE.get_or_init(|| {
+        Regex::new(r"```\s*([^\n`]*?)\s*\n([\s\S]*?)```").expect("markdown fence regex")
+    })
+}
+
+/// Pull `` ```lang\n…\n``` `` blocks out of a text body. `lang == diff` (case-insensitive)
+/// becomes [`ReplyKind::Diff`]; other languages become [`ReplyKind::CodeBlock`].
+/// Unclosed fences are left in the trailing `Text`. No fences → single `Text`.
 pub fn split_text_into_blocks(body: &str) -> Vec<CliReply> {
-    const OPEN: &str = "```diff\n";
-    const CLOSE: &str = "\n```";
     let mut out = Vec::new();
-    let mut rest = body;
-    while let Some(open_idx) = rest.find(OPEN) {
-        let before = &rest[..open_idx];
-        let trimmed_before = before.trim_matches('\n');
-        if !trimmed_before.is_empty() {
-            out.push(CliReply::text(trimmed_before.to_string()));
-        }
-        let after_open = &rest[open_idx + OPEN.len()..];
-        match after_open.find(CLOSE) {
-            Some(close_idx) => {
-                let inner = &after_open[..close_idx];
-                out.push(CliReply::diff(inner.to_string()));
-                rest = &after_open[close_idx + CLOSE.len()..];
-            }
-            None => {
-                // unterminated fence — keep whatever came after open as diff
-                out.push(CliReply::diff(after_open.to_string()));
-                rest = "";
-                break;
+    let re = md_fence_regex();
+    let mut last = 0usize;
+    for cap in re.captures_iter(body) {
+        let m = cap.get(0).expect("regex capture 0");
+        if m.start() > last {
+            let chunk = body[last..m.start()].trim_matches('\n');
+            if !chunk.is_empty() {
+                out.push(CliReply::text(chunk.to_string()));
             }
         }
+        let lang = cap.get(1).map(|g| g.as_str().trim()).unwrap_or("");
+        let inner = cap
+            .get(2)
+            .map(|g| g.as_str())
+            .unwrap_or("")
+            .trim_matches('\n');
+        if lang.eq_ignore_ascii_case("diff") {
+            out.push(CliReply::diff(inner.to_string()));
+        } else {
+            out.push(CliReply::code(lang.to_string(), inner.to_string()));
+        }
+        last = m.end();
     }
-    let tail = rest.trim_matches('\n');
+    let tail = body[last..].trim_matches('\n');
     if !tail.is_empty() {
         out.push(CliReply::text(tail.to_string()));
     }
@@ -513,6 +581,22 @@ mod tests {
         let parts = split_text_into_blocks("just prose, no fences");
         assert_eq!(parts.len(), 1);
         assert!(matches!(parts[0].kind, ReplyKind::Text));
+    }
+
+    #[test]
+    fn split_text_pulls_rust_fence_out() {
+        let body = "intro\n```rust\nfn main() {}\n```\ntrailer";
+        let parts = split_text_into_blocks(body);
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(parts[0].kind, ReplyKind::Text));
+        assert_eq!(parts[0].body, "intro");
+        match &parts[1].kind {
+            ReplyKind::CodeBlock { lang } => assert_eq!(lang, "rust"),
+            _ => panic!("expected code block"),
+        }
+        assert_eq!(parts[1].body, "fn main() {}");
+        assert!(matches!(parts[2].kind, ReplyKind::Text));
+        assert_eq!(parts[2].body, "trailer");
     }
 
     #[test]
