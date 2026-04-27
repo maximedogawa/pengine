@@ -1,3 +1,4 @@
+use super::http_transport::HttpTransport;
 use super::transport::StdioTransport;
 use super::types::ToolDef;
 use serde_json::{json, Value};
@@ -8,13 +9,49 @@ use std::time::Duration;
 /// `podman run` + `npx -y` inside the container can exceed a minute on cold cache / slow networks.
 const MCP_CONNECT_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Underlying wire to one MCP server. Variants share the same `call`/`notify`
+/// surface so [`McpClient`] doesn't care which one connected.
+pub enum Transport {
+    Stdio(StdioTransport),
+    Http(HttpTransport),
+}
+
+impl Transport {
+    pub async fn call(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+        match self {
+            Transport::Stdio(t) => t.call(method, params).await,
+            Transport::Http(t) => t.call(method, params).await,
+        }
+    }
+
+    pub async fn call_with_timeout(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        match self {
+            Transport::Stdio(t) => t.call_with_timeout(method, params, timeout).await,
+            Transport::Http(t) => t.call_with_timeout(method, params, timeout).await,
+        }
+    }
+
+    pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<(), String> {
+        match self {
+            Transport::Stdio(t) => t.notify(method, params).await,
+            Transport::Http(t) => t.notify(method, params).await,
+        }
+    }
+}
+
 pub struct McpClient {
     pub server_name: String,
-    transport: StdioTransport,
+    transport: Transport,
     tool_defs: RwLock<Vec<ToolDef>>,
 }
 
 impl McpClient {
+    /// Connect over a child-process stdio MCP server.
     pub async fn connect(
         server_name: String,
         command: String,
@@ -22,8 +59,26 @@ impl McpClient {
         env: HashMap<String, String>,
         direct_return: bool,
     ) -> Result<Self, String> {
-        let transport = StdioTransport::spawn(&command, &args, &env).await?;
+        let transport = Transport::Stdio(StdioTransport::spawn(&command, &args, &env).await?);
+        Self::initialize(server_name, transport, direct_return).await
+    }
 
+    /// Connect over an HTTP MCP server (Claude Code `"type": "http"` shape).
+    pub async fn connect_http(
+        server_name: String,
+        url: String,
+        headers: HashMap<String, String>,
+        direct_return: bool,
+    ) -> Result<Self, String> {
+        let transport = Transport::Http(HttpTransport::new(url, headers)?);
+        Self::initialize(server_name, transport, direct_return).await
+    }
+
+    async fn initialize(
+        server_name: String,
+        transport: Transport,
+        direct_return: bool,
+    ) -> Result<Self, String> {
         let init_params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
@@ -60,7 +115,7 @@ impl McpClient {
             .clone()
     }
 
-    /// Update the `direct_return` flag on every tool for this server without reconnecting stdio.
+    /// Update the `direct_return` flag on every tool for this server without reconnecting.
     pub fn set_all_direct_return(&self, direct_return: bool) {
         let mut tools = self.tool_defs.write().expect("tool_defs lock poisoned");
         for t in tools.iter_mut() {

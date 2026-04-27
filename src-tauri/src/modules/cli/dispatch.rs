@@ -54,7 +54,7 @@ pub async fn dispatch_line(state: &AppState, line: &str, ctx: DispatchContext) -
         RouterOutcome::Unknown(name) => {
             CliReply::error(format!("unknown command: /{name} (try /help)",))
         }
-        RouterOutcome::Agent(text) => handlers::ask(state, text).await,
+        RouterOutcome::Agent(text) => handlers::ask_in_session(state, text, !ctx.telegram_surface).await,
         RouterOutcome::Native { name, rest } => dispatch_native(state, name, rest, ctx).await,
     }
 }
@@ -66,9 +66,21 @@ async fn dispatch_native(
     ctx: DispatchContext,
 ) -> CliReply {
     match name {
-        "help" => handlers::help(),
+        "help" => {
+            let topic = rest.split_whitespace().next();
+            handlers::help(topic)
+        }
         "version" => handlers::version(),
         "status" => handlers::status(state).await,
+        "doctor" => handlers::doctor(state).await,
+        "plan" => {
+            let action = rest.split_whitespace().next();
+            handlers::plan(state, action).await
+        }
+        "cost" => handlers::cost(state).await,
+        "resume" => handlers::resume(state).await,
+        "compact" => handlers::compact(state).await,
+        "clear" => handlers::clear(),
         "config" => {
             let kvs: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
             handlers::config(state, &kvs).await
@@ -94,6 +106,10 @@ async fn dispatch_native(
             let trimmed = rest.trim();
             let search = (!trimmed.is_empty()).then_some(trimmed);
             handlers::tools(state, search).await
+        }
+        "mcp" => {
+            let (action, tail) = split_first(rest);
+            super::mcp_cmd::run_from_args(state, action, tail).await
         }
         "skills" => {
             let (action, tail) = split_first(rest);
@@ -127,7 +143,7 @@ async fn dispatch_native(
             }
             handlers::logs(state, tail, follow).await
         }
-        "ask" => handlers::ask(state, rest).await,
+        "ask" => handlers::ask_in_session(state, rest, !ctx.telegram_surface).await,
         "app" => {
             if ctx.telegram_surface {
                 return CliReply::error("app: starting the GUI is not supported over Telegram.");

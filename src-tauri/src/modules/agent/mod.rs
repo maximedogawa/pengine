@@ -375,6 +375,9 @@ pub struct TurnResult {
     pub text: String,
     pub source: ReplySource,
     pub suppress_telegram_reply: bool,
+    pub prompt_tokens: u64,
+    pub eval_tokens: u64,
+    pub model: String,
 }
 
 impl TurnResult {
@@ -383,6 +386,9 @@ impl TurnResult {
             text: text.into(),
             source: ReplySource::Model,
             suppress_telegram_reply: false,
+            prompt_tokens: 0,
+            eval_tokens: 0,
+            model: String::new(),
         }
     }
 
@@ -391,6 +397,9 @@ impl TurnResult {
             text: String::new(),
             source: ReplySource::Model,
             suppress_telegram_reply: true,
+            prompt_tokens: 0,
+            eval_tokens: 0,
+            model: String::new(),
         }
     }
 }
@@ -732,10 +741,13 @@ async fn run_model_turn(
     think: bool,
     skills_slug_filter: Option<&[String]>,
 ) -> Result<TurnResult, String> {
+    let plan_mode = *state.plan_mode.read().await;
     let mut model = match state.preferred_ollama_model.read().await.clone() {
         Some(m) => m,
         None => ollama::active_model().await?,
     };
+    let mut tokens_in: u64 = 0;
+    let mut tokens_out: u64 = 0;
 
     let recent_tools = state.recent_tools_snapshot().await;
     let (has_tools, has_memory, memory_server_key) = {
@@ -768,6 +780,9 @@ async fn run_model_turn(
             allow_brave_web_search,
         )
     };
+    if plan_mode {
+        plan_mode_filter_writes(&mut tool_ctx.tools_json);
+    }
     state
         .emit_log(
             "tool_ctx",
@@ -787,7 +802,7 @@ async fn run_model_turn(
         .await;
     state.record_tool_selection_ms(tool_ctx.select_ms).await;
 
-    let system = build_system_prompt(
+    let mut system = build_system_prompt(
         state,
         user_message,
         has_tools,
@@ -795,6 +810,13 @@ async fn run_model_turn(
         skills_slug_filter,
     )
     .await;
+    if plan_mode {
+        system.push_str(
+            "\n\nPLAN MODE: You are in read-only planning mode. Do NOT call tools that modify state \
+             (memory writes, fs writes, append, edit, create). Produce a numbered, markdown plan that the \
+             user can review and apply. End with a one-line summary of expected impact.",
+        );
+    }
 
     // Order matters for Ollama KV-cache reuse across turns: system message
     // first, user second. Changing fragment order would invalidate the cached
@@ -840,6 +862,8 @@ async fn run_model_turn(
         }
         let result = result?;
         let tokens = fmt_tokens(result.prompt_tokens, result.eval_tokens);
+        tokens_in = tokens_in.saturating_add(result.prompt_tokens.unwrap_or(0));
+        tokens_out = tokens_out.saturating_add(result.eval_tokens.unwrap_or(0));
         let msg = result.message;
 
         if !result.tools_sent && tools_supported {
@@ -893,10 +917,18 @@ async fn run_model_turn(
 
         if tool_calls.is_empty() {
             if !content.is_empty() {
-                return Ok(TurnResult::reply(content));
+                let mut r = TurnResult::reply(content);
+                r.prompt_tokens = tokens_in;
+                r.eval_tokens = tokens_out;
+                r.model = model.clone();
+                return Ok(r);
             }
             if tool_results.is_empty() {
-                return Ok(TurnResult::reply(""));
+                let mut r = TurnResult::reply("");
+                r.prompt_tokens = tokens_in;
+                r.eval_tokens = tokens_out;
+                r.model = model.clone();
+                return Ok(r);
             }
             break;
         }
@@ -1050,6 +1082,9 @@ async fn run_model_turn(
                 text: direct_replies.join("\n\n"),
                 source: ReplySource::Tool,
                 suppress_telegram_reply: false,
+                prompt_tokens: tokens_in,
+                eval_tokens: tokens_out,
+                model: model.clone(),
             });
         }
     }
@@ -1089,6 +1124,8 @@ async fn run_model_turn(
         )
         .await?;
         let tokens = fmt_tokens(result.prompt_tokens, result.eval_tokens);
+        tokens_in = tokens_in.saturating_add(result.prompt_tokens.unwrap_or(0));
+        tokens_out = tokens_out.saturating_add(result.eval_tokens.unwrap_or(0));
         state
             .emit_log(
                 "time",
@@ -1107,6 +1144,9 @@ async fn run_model_turn(
                 text,
                 source: ReplySource::Model,
                 suppress_telegram_reply: false,
+                prompt_tokens: tokens_in,
+                eval_tokens: tokens_out,
+                model: model.clone(),
             });
         }
 
@@ -1115,6 +1155,9 @@ async fn run_model_turn(
             text: fallback,
             source: ReplySource::Tool,
             suppress_telegram_reply: false,
+            prompt_tokens: tokens_in,
+            eval_tokens: tokens_out,
+            model: model.clone(),
         });
     }
 
@@ -1123,9 +1166,99 @@ async fn run_model_turn(
     ))
 }
 
+/// Strip tool entries whose name suggests state mutation (memory writes, fs
+/// writes, edits, appends, deletes) so the plan-mode catalog stays read-only.
+/// Operates in place on the JSON array produced by `select_tools_for_turn`.
+///
+/// Why a curated list, not free substring search: short fragments like `put`
+/// or `post` collide with `output_*` / `compose_*` and would over-filter. The
+/// list below sticks to verbs that unambiguously mean "mutates state" when
+/// they appear as a token boundary in the tool name.
+fn plan_mode_filter_writes(tools_json: &mut serde_json::Value) {
+    const WRITE_TOKENS: &[&str] = &[
+        "write", "edit", "append", "create", "delete", "remove", "patch", "update", "save",
+        "rename", "move", "upsert", "insert", "destroy", "mutate", "replace",
+    ];
+    let Some(arr) = tools_json.as_array_mut() else {
+        return;
+    };
+    arr.retain(|t| {
+        let name = t
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name.is_empty() {
+            return true;
+        }
+        !contains_write_token(&name, WRITE_TOKENS)
+    });
+}
+
+/// True when any of `tokens` appears in `name` at a name-component boundary
+/// (start, end, or surrounded by `_` / `.` / `-`). Avoids false positives like
+/// `output` containing `put`.
+fn contains_write_token(name: &str, tokens: &[&str]) -> bool {
+    let bytes = name.as_bytes();
+    for tok in tokens {
+        let needle = tok.as_bytes();
+        if needle.is_empty() || bytes.len() < needle.len() {
+            continue;
+        }
+        let mut i = 0;
+        while i + needle.len() <= bytes.len() {
+            if &bytes[i..i + needle.len()] == needle {
+                let left_ok = i == 0 || matches!(bytes[i - 1], b'_' | b'.' | b'-');
+                let right = i + needle.len();
+                let right_ok =
+                    right == bytes.len() || matches!(bytes[right], b'_' | b'.' | b'-');
+                if left_ok && right_ok {
+                    return true;
+                }
+            }
+            i += 1;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_mode_filter_drops_write_tools() {
+        let mut v = json!([
+            { "type": "function", "function": { "name": "fetch" } },
+            { "type": "function", "function": { "name": "memory_create_entity" } },
+            { "type": "function", "function": { "name": "fs_write" } },
+            { "type": "function", "function": { "name": "brave_web_search" } },
+            { "type": "function", "function": { "name": "te_provider.edit_file" } },
+        ]);
+        plan_mode_filter_writes(&mut v);
+        let names: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["fetch", "brave_web_search"]);
+    }
+
+    #[test]
+    fn plan_mode_filter_keeps_read_only_lookalikes() {
+        // Names that contain write-verb substrings but not at a token boundary
+        // must not be filtered out (e.g. `compose_*`, `output_*`).
+        let mut v = json!([
+            { "type": "function", "function": { "name": "compose_message" } },
+            { "type": "function", "function": { "name": "output_format" } },
+            { "type": "function", "function": { "name": "asset_lookup" } },
+            { "type": "function", "function": { "name": "search_results" } },
+        ]);
+        plan_mode_filter_writes(&mut v);
+        assert_eq!(v.as_array().unwrap().len(), 4);
+    }
 
     #[test]
     fn think_prefix_parsed_and_stripped() {

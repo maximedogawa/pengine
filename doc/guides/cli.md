@@ -100,8 +100,8 @@ explicit and reversible (**Remove launcher**).
 
 ## Global flags (order matters)
 
-Flags declared at the **root** of the CLI schema (`--json`, `--no-terminal`,
-`--no-telegram`) must appear **before** the subcommand, for example:
+Flags declared at the **root** of the CLI schema must appear **before** the
+subcommand, for example:
 
 ```bash
 pengine --json status
@@ -113,8 +113,37 @@ Not:
 pengine status --json   # rejected by the CLI parser
 ```
 
-`pengine help` documents the native command names; machine-readable metadata is
-also available from the local HTTP API: `GET /v1/cli/commands`.
+| Flag | Purpose |
+| --- | --- |
+| `--json` | Emit a versioned JSON envelope per reply (`{"v":1,"reply":{…}}`). |
+| `-p`, `--print "<prompt>"` | Non-interactive: run one agent turn on `<prompt>` and exit. |
+| `--output-format <fmt>` | With `-p`: `text` (default), `json`, or `stream-json`. |
+| `--continue` | Resume the most recent saved REPL session (works with bare `pengine`, `pengine -p`, and `pengine ask`). |
+| `--shell` | With no subcommand, require a TTY for the REPL; never open the GUI in-process. |
+| `-V`, `--version` | Print version and exit. |
+| `-h`, `--help [topic]` | Print help; with `[topic]`, print detailed help for that command. |
+| `--no-terminal`, `--no-telegram` | Reserved for future sink routing. |
+
+`pengine help [command]` documents the native command names; per-command details
+include usage examples. Machine-readable metadata is also available from the
+local HTTP API: `GET /v1/cli/commands`.
+
+### Non-interactive mode (`-p`)
+
+Stream a single prompt through the agent and exit — useful for scripts:
+
+```bash
+pengine -p "summarize the last hour of MCP tool errors"
+pengine --json -p "what's my preferred model?"
+pengine --output-format stream-json -p "..."
+```
+
+Combine with `--continue` to keep using the most recent REPL session (the
+session's prior summary + last few turns are prepended automatically):
+
+```bash
+pengine --continue -p "and what about the failures yesterday?"
+```
 
 ## `tauri dev` and arguments
 
@@ -129,10 +158,18 @@ Without subcommands after `--`, the app starts in **GUI** mode as usual.
 
 ## What to expect
 
-- **One-shot commands** (`version`, `help`, `status`, `ask`, …) should print and
-  exit with code **0** (or non-zero on error), without leaving a window open.
-- **Bare `pengine`** (TTY, no subcommand) starts an interactive session (line editor + history); exit with
-  `/exit`, `exit`, `quit`, or Ctrl+D.
+- **One-shot commands** (`version`, `help`, `status`, `ask`, `doctor`, …)
+  print and exit with code **0** (or non-zero on error), without leaving a
+  window open.
+- **Bare `pengine`** (TTY, no subcommand) starts an interactive session (line
+  editor + history). Exit with:
+  - `/exit`, `/quit`, `exit`, `quit`, Ctrl+D, **or**
+  - **double Ctrl+C** within 2 seconds — the first Ctrl+C clears the line,
+    the second exits.
+- **Multi-line input**: end a line with `\` to continue on the next line. The
+  joined message is sent on the first line that does **not** end with `\`.
+- **Clear screen**: `/clear` (or bare `clear`) clears the REPL, the same as
+  Ctrl+L.
 - **`logs --follow`** streams until interrupted (Ctrl+C); avoid it in
   automation unless you plan to kill the process.
 
@@ -177,12 +214,207 @@ rg '"kind":"cli"' "$store"/logs/audit-$(date +%Y-%m-%d).log
 
 (`pengine status` prints the `connection.json` path; its parent directory holds the `logs/` folder. `secure_store` keys never touch the audit JSON.)
 
+## Sessions: `/compact`, `/resume`, `/cost`, `--continue`
+
+`pengine` keeps an in-memory session of the REPL turns + token totals.
+The session is persisted on every successful agent turn to:
+
+- `{store_dir}/cli_sessions/<id>.json` — full turn record
+- `{store_dir}/cli_session_last.json` — pointer to the most recent session
+
+Each new user message is decorated with a context prefix built from the
+session's optional summary plus the last **6 turns** / **12 KB** of history,
+so prompt size stays bounded across long sessions.
+
+| Command | Effect |
+| --- | --- |
+| `/cost` | Token totals for the active session + heuristic cloud cost estimate ($1/$3 per M in/out). Local models report $0. |
+| `/compact` | Calls the model to summarize the transcript, replaces the turn history with that summary, and saves. Use when the prefix budget gets tight or you want to start fresh without losing context. |
+| `/resume` | Loads the most recent saved session into the current REPL. |
+| `pengine --continue` | One-shot equivalent of `/resume`; works with bare `pengine` (REPL), `pengine -p "..."`, and `pengine ask "..."`. |
+
+## First-run folder trust prompt
+
+When you start the **REPL** inside a directory that is not yet covered by an
+MCP filesystem root, Pengine asks once — same idea as Claude Code's "trust
+this folder" prompt:
+
+```
+  ⎿  /Users/you/Projects/myapp
+     Add this folder to Pengine's MCP filesystem roots? [y/n]
+```
+
+- **`y` / `yes`** — adds the folder to `mcp.json` (same effect as
+  `pengine fs add <path>`) and records the choice so you're never asked
+  again for that path. The decision also covers any subdirectory.
+- **`n` / `no`** — saves the path on the deny list so you're not asked
+  again.
+- **Any other answer (or `Ctrl+C`)** — skipped; you'll be asked again next
+  launch.
+
+Decisions live in `{store_dir}/folder_trust.json`:
+
+```json
+{
+  "trusted": ["/Users/you/Projects/myapp"],
+  "denied": ["/private/tmp"]
+}
+```
+
+The prompt is skipped entirely when:
+
+- stdin is not a TTY (one-shot commands, `pengine -p`, scripts, CI),
+- the cwd is already under an existing MCP fs root,
+- the cwd has already been decided (in `trusted` or `denied`),
+- the cwd is the filesystem root.
+
+To revoke trust later, edit `folder_trust.json` directly and remove the
+folder from `mcp.json` via `pengine fs remove <path>`.
+
+## `@file` mentions
+
+In the REPL or `pengine ask`, tokens like `@README.md` or `@/abs/path/to/file`
+are detected and the file content is appended to the prompt under a
+`## Mentioned files` block. Trailing punctuation (`,` `:` `.` `)` `]`) is
+stripped from the path.
+
+- **Cap per file**: 64 KB. Larger files are truncated with a `(truncated)` marker.
+- **Cap per message**: 8 files.
+- **Sandbox**: when MCP filesystem roots are configured (`pengine fs add …`),
+  mentions are restricted to those roots; otherwise `cwd`-relative paths are
+  unrestricted.
+- Errors (missing file, outside roots) are reported inline at the bottom of the
+  reply and never abort the turn.
+
+## Plan mode
+
+Toggle with `/plan` (or `pengine plan on|off`). When on, the agent is given a
+planning system prompt and write-style tools are stripped from the catalog
+(name substring match: `write`, `edit`, `append`, `create`, `delete`, `patch`,
+`update`, `save`, `set_`/`_set`, `rename`, `move`, `upsert`, `insert`,
+`put`, `post`).
+
+```
+❯ /plan on
+  ⎿  plan mode: ON
+       · agent will produce a markdown plan
+       · write tools (memory writes, fs writes, edits) are stripped from the catalog
+❯ migrate the user table to add a `created_at` column
+  ⎿  ## Plan
+     1. Add `created_at TIMESTAMPTZ DEFAULT now()` to `users` …
+     2. Backfill existing rows in batches …
+```
+
+Plan mode is process-local state on `AppState.plan_mode`; it resets when the
+process exits.
+
+## Adding MCP servers
+
+Pengine speaks the same MCP wire protocol as Claude Code, so any server you
+can run in Claude can run in Pengine. Three install paths:
+
+### 1. Docker image (recommended)
+
+Wraps the server in a container the same way pengine's built-in Tool Engine
+catalog does. Requires podman or docker on the host.
+
+```bash
+pengine mcp add github \
+  --image ghcr.io/example/github-mcp:latest \
+  --mount-workspace \
+  --append-roots
+```
+
+Flags:
+
+- `--mount-workspace` — bind-mount every MCP filesystem root into the container
+- `--mount-rw` — make those mounts read-write (default is read-only)
+- `--append-roots` — append the container-side mount paths as argv after the image
+- `--cmd <arg>` — extra argv after the image (repeatable; for images whose ENTRYPOINT is not the MCP server)
+- `--direct-return` — send tool output straight to the user, no model summarisation
+
+### 2. HTTP (Claude Code's `"type": "http"`)
+
+For remote MCP servers (Anthropic-hosted, GitHub Copilot's, etc.):
+
+```bash
+pengine mcp add gh \
+  --url https://api.example.com/mcp/ \
+  --header "Authorization: Bearer $GITHUB_TOKEN"
+```
+
+Headers can be repeated. `Key: value` and `Key=value` are both accepted.
+Pengine accepts `application/json` and `text/event-stream` responses.
+
+### 3. Plain stdio
+
+For Node `npx` servers when you don't want the Docker wrap (faster iteration,
+no container runtime needed):
+
+```bash
+pengine mcp add fs \
+  --command npx \
+  --arg -y --arg @modelcontextprotocol/server-filesystem --arg "$PWD" \
+  --env DEBUG=1
+```
+
+### List / remove
+
+```bash
+pengine mcp                      # alias for `pengine mcp list`
+pengine mcp list
+pengine mcp remove fs            # remove from mcp.json (and custom_tools, if applicable)
+```
+
+## Importing a Claude Code config
+
+If you already have a `~/.claude.json` (or any `mcpServers`-shaped file),
+import its servers into pengine's global `mcp.json`:
+
+```bash
+pengine mcp import ~/.claude.json
+```
+
+Servers with the same name are overwritten; new ones are added.
+
+## Project-local `.mcp.json`
+
+Drop a Claude Code-style `.mcp.json` at the root of any project:
+
+```json
+{
+  "mcpServers": {
+    "fs":  { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "gh":  { "type": "http", "url": "https://api.example.com/mcp/", "headers": { "Authorization": "Bearer …" } }
+  }
+}
+```
+
+When pengine starts in that directory, the file is loaded **on top of** the
+global `mcp.json` for the lifetime of the process — it is never written to
+the global config. Project entries with the same key as a global entry win
+for that session. A `loaded project .mcp.json (N server(s)) from …` line
+appears in the audit log on every rebuild.
+
+## Diagnostics (`pengine doctor`)
+
+Probe each subsystem and print a checklist (`[ok]` / `[warn]` / `[fail]`):
+
+```
+pengine doctor
+```
+
+Checks: store writability, Ollama daemon reachability, model catalog, MCP
+registry rebuild, keychain (when a bot is connected), and outbound HTTPS.
+Exit code is non-zero if any check fails.
+
 ## Known gaps vs Claude Code
 
 These are deliberate omissions for the current feature set — tracked for later but not implemented today:
 
 - **Streaming tool-call result bodies inside a reply**: each tool call now shows as its own `  ⎿  · …` line, but the **full** result body is still collapsed. Claude Code shows expandable tool outputs; Pengine only shows the one-line summary (`name: N bytes`, `name error: …`). Surfacing full bodies would need `agent::run_turn` to forward content, not just `emit_log` notices.
 - **Inline Telegram buttons** (rerun / rollback): explicitly deferred (`cli_plan.md` §11).
+- **In-flight turn cancellation**: double Ctrl+C exits the REPL but does not currently abort an in-progress agent turn — Pengine's tool loop is not cooperatively cancellable yet. Press Ctrl+C twice to exit; the in-flight turn's tool calls run to completion in the background.
 
 ## Automated checks
 

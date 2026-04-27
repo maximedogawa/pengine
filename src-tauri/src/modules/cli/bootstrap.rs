@@ -65,15 +65,17 @@ pub fn handle_cli_or_continue(app: &tauri::App) {
     };
 
     let json = flag_true(&matches.args, "json");
-    let sink: Box<dyn OutputSink> = if json {
-        Box::new(JsonSink)
-    } else {
-        Box::new(TerminalSink::new())
+    let output_format = single_string(&matches.args, "output-format")
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| if json { "json".to_string() } else { "text".to_string() });
+    let sink: Box<dyn OutputSink> = match output_format.as_str() {
+        "json" | "stream-json" => Box::new(JsonSink),
+        _ => Box::new(TerminalSink::new()),
     };
 
     if let Some(arg) = matches.args.get("help") {
         if matches!(arg.value, Value::String(_)) {
-            sink.render(&handlers::help());
+            sink.render(&handlers::help(help_topic_from_argv().as_deref()));
             std::process::exit(0);
         }
     }
@@ -81,6 +83,41 @@ pub fn handle_cli_or_continue(app: &tauri::App) {
         sink.render(&handlers::version());
         std::process::exit(0);
     }
+
+    // `-p` / `--print` short-circuits to a single agent turn and exits.
+    if let Some(prompt) = single_string(&matches.args, "print") {
+        let state = match build_state(app) {
+            Ok(s) => s,
+            Err(e) => {
+                sink.render(&CliReply::error(format!("state: {e}")));
+                std::process::exit(1);
+            }
+        };
+        if flag_true(&matches.args, "continue") {
+            if let Ok(Some(s)) =
+                crate::modules::cli::session::load_last(&state.store_path)
+            {
+                tauri::async_runtime::block_on(async {
+                    *state.cli_session.write().await = Some(s);
+                });
+            }
+        }
+        let reply = tauri::async_runtime::block_on(async {
+            if let Err(e) = mcp_service::rebuild_registry_into_state(&state).await {
+                return CliReply::error(format!("mcp warmup failed: {e}"));
+            }
+            handlers::ask_in_session(
+                &state,
+                &prompt,
+                flag_true(&matches.args, "continue"),
+            )
+            .await
+        });
+        let is_error = matches!(reply.kind, crate::modules::cli::output::ReplyKind::Error);
+        sink.render(&reply);
+        std::process::exit(if is_error { 1 } else { 0 });
+    }
+
     if matches.subcommand.is_none() {
         match argv_intent() {
             ArgvIntent::None => {
@@ -115,12 +152,21 @@ pub fn handle_cli_or_continue(app: &tauri::App) {
                         std::process::exit(1);
                     }
                 };
+                if flag_true(&matches.args, "continue") {
+                    if let Ok(Some(s)) =
+                        crate::modules::cli::session::load_last(&state.store_path)
+                    {
+                        tauri::async_runtime::block_on(async {
+                            *state.cli_session.write().await = Some(s);
+                        });
+                    }
+                }
                 let reply = tauri::async_runtime::block_on(super::repl::run(&state));
                 sink.render(&reply);
                 std::process::exit(0);
             }
             ArgvIntent::Help => {
-                sink.render(&handlers::help());
+                sink.render(&handlers::help(help_topic_from_argv().as_deref()));
                 std::process::exit(0);
             }
             ArgvIntent::Version => {
@@ -153,7 +199,9 @@ fn run_subcommand(app: &tauri::App, matches: Matches, sink: &dyn OutputSink) -> 
     // Zero-state commands run without constructing AppState.
     match name {
         "help" => {
-            sink.render(&handlers::help());
+            // `help` here is clap's auto-generated subcommand. Read the topic
+            // from argv since the subcommand schema isn't ours to extend.
+            sink.render(&handlers::help(help_topic_from_argv().as_deref()));
             return 0;
         }
         "version" => {
@@ -207,6 +255,15 @@ async fn dispatch_stateful(
 ) -> CliReply {
     match name {
         "status" => handlers::status(state).await,
+        "doctor" => handlers::doctor(state).await,
+        "plan" => {
+            let action = single_string(args, "action");
+            handlers::plan(state, action.as_deref()).await
+        }
+        "cost" => handlers::cost(state).await,
+        "resume" => handlers::resume(state).await,
+        "compact" => handlers::compact(state).await,
+        "clear" => handlers::clear(),
         "config" => {
             let kvs = multi_string(args, "kv");
             handlers::config(state, &kvs).await
@@ -237,6 +294,12 @@ async fn dispatch_stateful(
             let search = single_string(args, "search");
             handlers::tools(state, search.as_deref()).await
         }
+        "mcp" => {
+            let action = single_string(args, "action").unwrap_or_default();
+            let rest_tokens = multi_string(args, "rest");
+            let rest = shellish_join(&rest_tokens);
+            super::mcp_cmd::run_from_args(state, action.trim(), rest.trim()).await
+        }
         "skills" => {
             let action = single_string(args, "action");
             let slug = single_string(args, "slug");
@@ -257,7 +320,13 @@ async fn dispatch_stateful(
             if let Err(e) = mcp_service::rebuild_registry_into_state(state).await {
                 return CliReply::error(format!("mcp warmup failed: {e}"));
             }
-            handlers::ask(state, &text).await
+            let cont = flag_true(args, "continue");
+            if cont {
+                if let Ok(Some(s)) = crate::modules::cli::session::load_last(&state.store_path) {
+                    *state.cli_session.write().await = Some(s);
+                }
+            }
+            handlers::ask_in_session(state, &text, cont).await
         }
         other => CliReply::error(format!("unknown subcommand `{other}`")),
     }
@@ -298,7 +367,12 @@ fn cli_subcommand_audit_summary(
     let mut out = String::from("pengine ");
     out.push_str(name);
     match name {
-        "status" | "app" => {}
+        "status" | "app" | "doctor" | "cost" | "resume" | "compact" | "clear" => {}
+        "plan" => {
+            if let Some(a) = single_string(args, "action") {
+                let _ = write!(out, " {}", truncate_audit_str(&a, 32));
+            }
+        }
         "config" => {
             let kvs = multi_string(args, "kv");
             if !kvs.is_empty() {
@@ -343,6 +417,16 @@ fn cli_subcommand_audit_summary(
             }
             if let Some(p) = single_string(args, "path") {
                 let _ = write!(out, " {}", truncate_audit_str(&p, 400));
+            }
+        }
+        "mcp" => {
+            if let Some(a) = single_string(args, "action") {
+                let _ = write!(out, " {}", truncate_audit_str(&a, 32));
+            }
+            let rest = multi_string(args, "rest");
+            if !rest.is_empty() {
+                let joined = rest.join(" ");
+                let _ = write!(out, " {}", truncate_audit_str(&joined, 400));
             }
         }
         "logs" => {
@@ -397,6 +481,23 @@ fn single_string(args: &HashMap<String, ArgData>, name: &str) -> Option<String> 
     }
 }
 
+/// Re-join argv-style tokens into a single string the slash dispatch parser
+/// can re-tokenize. Only quotes tokens that contain whitespace; everything
+/// else passes through verbatim so simple flags stay readable in audit logs.
+fn shellish_join(tokens: &[String]) -> String {
+    tokens
+        .iter()
+        .map(|t| {
+            if t.chars().any(char::is_whitespace) {
+                format!("\"{}\"", t.replace('"', "\\\""))
+            } else {
+                t.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn multi_string(args: &HashMap<String, ArgData>, name: &str) -> Vec<String> {
     let Some(arg) = args.get(name) else {
         return Vec::new();
@@ -429,6 +530,22 @@ fn argv_intent() -> ArgvIntent {
     argv_intent_from(std::env::args().skip(1))
 }
 
+/// When the user runs `pengine help <topic>` (or `pengine --help <topic>`),
+/// return `<topic>`. Returns `None` if no topic word is present after the help token.
+fn help_topic_from_argv() -> Option<String> {
+    let mut iter = std::env::args().skip(1).filter(|a| !is_ignored_os_arg(a));
+    while let Some(a) = iter.next() {
+        let t = a.trim();
+        if matches!(t, "--help" | "-h" | "help") {
+            return iter
+                .find(|next| !next.starts_with('-'))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
+    }
+    None
+}
+
 fn argv_intent_from<I, S>(args: I) -> ArgvIntent
 where
     I: IntoIterator<Item = S>,
@@ -445,7 +562,8 @@ where
     match first.as_str() {
         "--help" | "-h" | "help" => ArgvIntent::Help,
         "--version" | "-V" | "version" => ArgvIntent::Version,
-        "--json" | "--no-terminal" | "--no-telegram" => ArgvIntent::CommandLike,
+        "--json" | "--no-terminal" | "--no-telegram" | "--continue" | "-p" | "--print"
+        | "--output-format" => ArgvIntent::CommandLike,
         other if !other.starts_with('-') && commands::lookup(other).is_some() => {
             ArgvIntent::CommandLike
         }

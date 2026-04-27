@@ -134,7 +134,7 @@ async fn text_handler(bot: Bot, msg: Message, state: AppState) -> ResponseResult
         state
             .emit_log(
                 "reply",
-                &format!("[cli:$] {}", body_preview.lines().next().unwrap_or("")),
+                &format!("(cli:$) {}", body_preview.lines().next().unwrap_or("")),
             )
             .await;
         send_telegram_cli_reply(&bot, msg.chat.id, &reply, &state).await;

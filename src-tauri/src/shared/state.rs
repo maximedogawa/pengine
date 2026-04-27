@@ -110,6 +110,12 @@ pub struct AppState {
     pub cron_save_mutex: Arc<Mutex<()>>,
     /// Bounded queue to the background audit NDJSON writer (`audit_log::run_audit_writer`).
     pub audit_tx: tokio::sync::mpsc::Sender<crate::infrastructure::audit_log::AuditLine>,
+    /// Plan mode: when true the agent receives a planning system prompt and
+    /// write-style tools are stripped from the catalog. Toggled via `/plan`.
+    pub plan_mode: Arc<RwLock<bool>>,
+    /// Active CLI/REPL session (turn history, summary, token totals).
+    /// `None` outside the REPL or before the first ask.
+    pub cli_session: Arc<RwLock<Option<crate::modules::cli::session::CliSession>>>,
 }
 
 impl AppState {
@@ -154,6 +160,8 @@ impl AppState {
             cron_no_chat_warned: Arc::new(AtomicBool::new(false)),
             cron_save_mutex: Arc::new(Mutex::new(())),
             audit_tx,
+            plan_mode: Arc::new(RwLock::new(false)),
+            cli_session: Arc::new(RwLock::new(None)),
         };
         (this, audit_rx)
     }

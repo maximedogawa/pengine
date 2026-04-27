@@ -25,6 +25,21 @@
         {
           "name": "shell",
           "description": "Terminal-only: start the REPL with no args, or exit if stdin is not a TTY (never opens the GUI)"
+        },
+        {
+          "name": "print",
+          "short": "p",
+          "description": "Non-interactive: run the agent on the given prompt and exit",
+          "takesValue": true
+        },
+        {
+          "name": "output-format",
+          "description": "With --print: text (default), json, or stream-json",
+          "takesValue": true
+        },
+        {
+          "name": "continue",
+          "description": "Resume the most recent saved REPL session"
         }
       ],
       "subcommands": {
@@ -36,6 +51,32 @@
         },
         "status": {
           "description": "Show bot, Ollama, and MCP status"
+        },
+        "doctor": {
+          "description": "Run environment diagnostics (Ollama, MCP, keychain, store, network)"
+        },
+        "cost": {
+          "description": "Show token usage + estimated cost for the current session"
+        },
+        "resume": {
+          "description": "Resume the most recent saved REPL session"
+        },
+        "compact": {
+          "description": "Summarize the current session and reset turn history"
+        },
+        "clear": {
+          "description": "Clear the REPL screen (REPL-only; errors elsewhere)"
+        },
+        "plan": {
+          "description": "Toggle plan mode (read-only agent + planning system prompt)",
+          "args": [
+            {
+              "name": "action",
+              "description": "on | off | toggle (default toggle)",
+              "takesValue": true,
+              "index": 1
+            }
+          ]
         },
         "config": {
           "description": "Show or set user settings (e.g. skills_hint_max_bytes=12000)",
@@ -125,6 +166,24 @@
             }
           ]
         },
+        "mcp": {
+          "description": "List, add, remove, or import MCP servers",
+          "args": [
+            {
+              "name": "action",
+              "description": "list | add | remove | import (defaults to list)",
+              "takesValue": true,
+              "index": 1
+            },
+            {
+              "name": "rest",
+              "description": "Action arguments (forwarded to the parser; quote multi-word values)",
+              "takesValue": true,
+              "multiple": true,
+              "index": 2
+            }
+          ]
+        },
         "logs": {
           "description": "Stream log events",
           "args": [
@@ -134,7 +193,10 @@
         },
         "ask": {
           "description": "Send a message to the agent (AI path)",
-          "args": [{ "name": "text", "description": "The prompt", "takesValue": true, "index": 1 }]
+          "args": [
+            { "name": "text", "description": "The prompt", "takesValue": true, "index": 1 },
+            { "name": "continue", "description": "Resume the most recent saved REPL session" }
+          ]
         }
       }
     }
