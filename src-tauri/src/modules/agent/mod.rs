@@ -562,10 +562,7 @@ fn merge_filesystem_mcp_path_args(
         "list_directory_with_sizes",
         "search_files",
     ];
-    if !DIR_TOOLS
-        .iter()
-        .any(|t| base.eq_ignore_ascii_case(t))
-    {
+    if !DIR_TOOLS.iter().any(|t| base.eq_ignore_ascii_case(t)) {
         return args;
     }
     let Some(default) = default_path.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -1257,11 +1254,7 @@ async fn run_model_turn(
                     let raw = tool_call_arguments(call);
                     let args = merge_filesystem_mcp_path_args(
                         &name,
-                        merge_git_repo_path_args(
-                            &name,
-                            raw,
-                            workspace_mount_default.as_deref(),
-                        ),
+                        merge_git_repo_path_args(&name, raw, workspace_mount_default.as_deref()),
                         workspace_mount_default.as_deref(),
                     );
                     let resolved = reg.prepare_tool_invocation(&name, args);
@@ -1661,7 +1654,10 @@ mod tests {
             Some("/app/pengine"),
         );
         let obj = out.as_object().unwrap();
-        assert_eq!(obj.get("path").and_then(|v| v.as_str()), Some("/app/pengine"));
+        assert_eq!(
+            obj.get("path").and_then(|v| v.as_str()),
+            Some("/app/pengine")
+        );
         let ep = obj
             .get("excludePatterns")
             .and_then(|v| v.as_array())
@@ -1671,11 +1667,7 @@ mod tests {
 
     #[test]
     fn list_directory_merge_matches_prefixed_server_tool_name() {
-        let out = merge_filesystem_mcp_path_args(
-            "te_x.list_directory",
-            json!({}),
-            Some("/app/ws"),
-        );
+        let out = merge_filesystem_mcp_path_args("te_x.list_directory", json!({}), Some("/app/ws"));
         assert_eq!(out["path"], json!("/app/ws"));
     }
 }

@@ -898,7 +898,10 @@ fn friendly_tool_action(name: &str) -> String {
                 let mut it = w.chars();
                 match it.next() {
                     None => String::new(),
-                    Some(c) => c.to_uppercase().chain(it.flat_map(|x| x.to_lowercase())).collect(),
+                    Some(c) => c
+                        .to_uppercase()
+                        .chain(it.flat_map(|x| x.to_lowercase()))
+                        .collect(),
                 }
             })
             .collect::<Vec<_>>()
@@ -929,10 +932,7 @@ fn humanize_tool_status_line(message: &str) -> Option<String> {
         if let Some((step, tail)) = rest.split_once(']') {
             if step == "host" {
                 if msg.contains("auto-fetch") {
-                    return Some(truncate_chars(
-                        "Loading a linked page…",
-                        MAX,
-                    ));
+                    return Some(truncate_chars("Loading a linked page…", MAX));
                 }
                 return Some(truncate_chars(msg, MAX));
             }
@@ -969,7 +969,9 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     }
     format!(
         "{}…",
-        s.chars().take(max_chars.saturating_sub(1)).collect::<String>()
+        s.chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>()
     )
 }
 
