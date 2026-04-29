@@ -200,9 +200,7 @@ fn fetch_url_dedup_key(url: &str) -> String {
 /// Stdio MCP child exited or closed stdin — the existing [`crate::modules::mcp::client::McpClient`] is dead.
 fn mcp_stdio_recoverable(err: &str) -> bool {
     let e = err.to_ascii_lowercase();
-    e.contains("broken pipe")
-        || e.contains("os error 32")
-        || e.contains("connection reset")
+    e.contains("broken pipe") || e.contains("os error 32") || e.contains("connection reset")
 }
 
 /// Run a `task_spawn` tool call inline (not via [`crate::modules::mcp::registry::Provider::call_tool`]).
@@ -210,7 +208,10 @@ fn mcp_stdio_recoverable(err: &str) -> bool {
 /// The recursive call into [`run_system_turn`] makes this future `!Send`, so it cannot be inserted
 /// into the parallel `tokio::spawn` pool. The dispatcher detects task-spawner provider invocations
 /// and routes them through this function instead.
-async fn run_task_spawn_inline(state: &AppState, args: &serde_json::Value) -> Result<String, String> {
+async fn run_task_spawn_inline(
+    state: &AppState,
+    args: &serde_json::Value,
+) -> Result<String, String> {
     use std::sync::atomic::Ordering;
 
     let description = args
@@ -1189,9 +1190,8 @@ async fn run_model_turn(
         // `task_spawn` recursively calls into [`run_model_turn`], whose future is `!Send`.
         // Mixing it into the parallel `tokio::spawn` pool would fail to compile, so we run
         // task-spawner calls serially inline before joining the spawned handles.
-        let mut results: Vec<Result<String, String>> = (0..prepared.len())
-            .map(|_| Err(String::new()))
-            .collect();
+        let mut results: Vec<Result<String, String>> =
+            (0..prepared.len()).map(|_| Err(String::new())).collect();
         let mut spawned: Vec<(usize, tokio::task::JoinHandle<Result<String, String>>)> =
             Vec::with_capacity(prepared.len());
         for (i, (name, resolved)) in prepared.iter().enumerate() {
