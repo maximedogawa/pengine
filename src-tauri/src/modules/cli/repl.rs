@@ -77,8 +77,33 @@ store:     {}",
     // Best-effort MCP warmup so /tools and free-text /ask land with tools
     // available. Failure is reported but non-fatal — some REPL commands don't
     // need MCP (e.g. /config, /status).
-    if let Err(e) = mcp_service::rebuild_registry_into_state(state).await {
-        sink.render(&CliReply::error(format!("mcp warmup skipped: {e}")));
+    //
+    // Important UX guard: some MCP servers can take minutes to initialize
+    // (e.g. cold container/image startup). Don't block the REPL prompt on that;
+    // continue warmup in background when startup takes too long.
+    match tokio::time::timeout(
+        Duration::from_secs(8),
+        mcp_service::rebuild_registry_into_state(state),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            sink.render(&CliReply::error(format!("mcp warmup skipped: {e}")));
+        }
+        Err(_) => {
+            sink.render(&CliReply::text(
+                "mcp warmup is still running in background; the prompt is ready now.",
+            ));
+            let bg_state = state.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = mcp_service::rebuild_registry_into_state(&bg_state).await {
+                    bg_state
+                        .emit_log("mcp", &format!("background warmup failed: {e}"))
+                        .await;
+                }
+            });
+        }
     }
 
     let history_path = history_path(&state.store_path);

@@ -24,8 +24,9 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new(url: String, headers: HashMap<String, String>) -> Result<Self, String> {
+        // Ceiling for long `tools/call` (e.g. directory_tree); per-request timeout still passed in `call_with_timeout`.
         let client = Client::builder()
-            .timeout(Self::default_call_timeout())
+            .timeout(Duration::from_secs(600))
             .build()
             .map_err(|e| format!("reqwest client: {e}"))?;
         Ok(Self {

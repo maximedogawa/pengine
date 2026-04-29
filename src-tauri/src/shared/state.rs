@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -116,6 +116,10 @@ pub struct AppState {
     /// Active CLI/REPL session (turn history, summary, token totals).
     /// `None` outside the REPL or before the first ask.
     pub cli_session: Arc<RwLock<Option<crate::modules::cli::session::CliSession>>>,
+    /// Recursion guard for `task_spawn`. Incremented before a child agent turn
+    /// runs, decremented after; child agents see a non-zero value and refuse to
+    /// spawn further sub-tasks. Capped via [`crate::modules::mcp::native::TASK_SPAWN_MAX_DEPTH`].
+    pub task_spawn_depth: Arc<AtomicU8>,
 }
 
 impl AppState {
@@ -162,6 +166,7 @@ impl AppState {
             audit_tx,
             plan_mode: Arc::new(RwLock::new(false)),
             cli_session: Arc::new(RwLock::new(None)),
+            task_spawn_depth: Arc::new(AtomicU8::new(0)),
         };
         (this, audit_rx)
     }

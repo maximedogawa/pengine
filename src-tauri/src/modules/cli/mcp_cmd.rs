@@ -68,30 +68,27 @@ pub async fn add(state: &AppState, args: AddArgs) -> CliReply {
         return CliReply::error("mcp add: name is required");
     }
 
-    let installed: Vec<&'static str> = [
-        args.url.as_ref().map(|_| "url"),
-        args.image.as_ref().map(|_| "image"),
-        args.command.as_ref().map(|_| "command"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if installed.len() != 1 {
+    let modes_set = u8::from(args.url.is_some())
+        + u8::from(args.image.is_some())
+        + u8::from(args.command.is_some());
+    if modes_set != 1 {
         return CliReply::error(
-            "mcp add: pick exactly one of --url, --image, or --command (and --arg/--header/...)",
+            "mcp add: pick exactly one of --url <url>, --image <ref>, or --command <cmd>",
         );
     }
 
     if let Some(url) = args.url.clone() {
-        return add_http(state, &args.name, url, args.headers, args.direct_return).await;
+        add_http(state, &args.name, url, args.headers, args.direct_return).await
+    } else if let Some(image) = args.image.clone() {
+        add_docker(state, &args.name, image, &args).await
+    } else if let Some(command) = args.command.clone() {
+        add_stdio(state, &args.name, command, &args).await
+    } else {
+        // Unreachable: `modes_set == 1` guarantees exactly one branch above
+        // matches. Keep a structured error rather than `unreachable!()` so a
+        // future bug in the count check still surfaces a CliReply.
+        CliReply::error("mcp add: internal error (no install path matched)")
     }
-    if let Some(image) = args.image.clone() {
-        return add_docker(state, &args.name, image, &args).await;
-    }
-    if let Some(command) = args.command.clone() {
-        return add_stdio(state, &args.name, command, &args).await;
-    }
-    CliReply::error("mcp add: nothing to install")
 }
 
 pub async fn remove(state: &AppState, name: &str) -> CliReply {

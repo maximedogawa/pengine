@@ -81,16 +81,16 @@ pub enum PromptOutcome {
     NotPrompted,
 }
 
-/// Default prompt + answer reader. Writes the prompt to stderr (so it stays
-/// out of `--json` stdout pipelines) and reads one line from stdin.
+/// Default prompt + answer reader. Writes the prompt to stdout so it is
+/// visible in interactive terminals, then reads one line from stdin.
 fn ask(prompt: &str) -> PromptDecision {
     if !std::io::stdin().is_terminal() {
         return PromptDecision::Skip;
     }
     {
-        let mut err = std::io::stderr().lock();
-        let _ = err.write_all(prompt.as_bytes());
-        let _ = err.flush();
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(prompt.as_bytes());
+        let _ = out.flush();
     }
     let mut line = String::new();
     if std::io::stdin().lock().read_line(&mut line).is_err() {

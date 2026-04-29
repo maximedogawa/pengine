@@ -9,6 +9,20 @@ use std::time::Duration;
 /// `podman run` + `npx -y` inside the container can exceed a minute on cold cache / slow networks.
 const MCP_CONNECT_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Default JSON-RPC deadline for normal `tools/call` traffic (matches stdio/http transport defaults).
+const MCP_TOOLS_CALL_TIMEOUT_DEFAULT: Duration = Duration::from_secs(120);
+
+/// Recursive scans can exceed the default budget on large workspaces (`node_modules`, `.git`, …).
+const MCP_TOOLS_CALL_TIMEOUT_SLOW_FS: Duration = Duration::from_secs(600);
+
+fn tools_call_timeout(tool_name: &str) -> Duration {
+    match tool_name {
+        // Wide trees or deep recursion — same order of cost as `directory_tree`.
+        "directory_tree" | "search_files" => MCP_TOOLS_CALL_TIMEOUT_SLOW_FS,
+        _ => MCP_TOOLS_CALL_TIMEOUT_DEFAULT,
+    }
+}
+
 /// Underlying wire to one MCP server. Variants share the same `call`/`notify`
 /// surface so [`McpClient`] doesn't care which one connected.
 pub enum Transport {
@@ -126,9 +140,10 @@ impl McpClient {
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {
         let result = self
             .transport
-            .call(
+            .call_with_timeout(
                 "tools/call",
                 Some(json!({ "name": name, "arguments": args })),
+                tools_call_timeout(name),
             )
             .await?;
 

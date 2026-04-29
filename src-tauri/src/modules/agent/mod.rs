@@ -13,6 +13,7 @@ use crate::shared::text::{
 use chrono::Utc;
 use serde_json::json;
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Tool rounds + at least one completion-only step. Research flows (sitemap + several
@@ -196,6 +197,115 @@ fn fetch_url_dedup_key(url: &str) -> String {
     no_frag.to_lowercase()
 }
 
+/// Stdio MCP child exited or closed stdin — the existing [`crate::modules::mcp::client::McpClient`] is dead.
+fn mcp_stdio_recoverable(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("broken pipe")
+        || e.contains("os error 32")
+        || e.contains("connection reset")
+}
+
+/// Run a `task_spawn` tool call inline (not via [`crate::modules::mcp::registry::Provider::call_tool`]).
+///
+/// The recursive call into [`run_system_turn`] makes this future `!Send`, so it cannot be inserted
+/// into the parallel `tokio::spawn` pool. The dispatcher detects task-spawner provider invocations
+/// and routes them through this function instead.
+async fn run_task_spawn_inline(state: &AppState, args: &serde_json::Value) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
+
+    let description = args
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("missing 'description'")?;
+    let prompt = args
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("missing 'prompt'")?
+        .to_string();
+
+    let depth_before = state.task_spawn_depth.load(Ordering::Acquire);
+    if depth_before >= crate::modules::mcp::native::TASK_SPAWN_MAX_DEPTH {
+        return Err(format!(
+            "task_spawn refused: recursion depth {depth_before} >= cap {}",
+            crate::modules::mcp::native::TASK_SPAWN_MAX_DEPTH
+        ));
+    }
+    state.task_spawn_depth.fetch_add(1, Ordering::AcqRel);
+    state
+        .emit_log(
+            "task",
+            &format!("spawn[{}]: {description}", depth_before + 1),
+        )
+        .await;
+
+    let started = std::time::Instant::now();
+    // `Box::pin` breaks the cycle [run_model_turn → run_task_spawn_inline → run_system_turn → run_model_turn]
+    // that would otherwise produce an infinitely-sized future.
+    let result = Box::pin(run_system_turn(state, &prompt, None)).await;
+    state.task_spawn_depth.fetch_sub(1, Ordering::AcqRel);
+
+    match result {
+        Ok(turn) => {
+            state
+                .emit_log(
+                    "task",
+                    &format!(
+                        "done[{}]: {description} ({} ms, {} chars)",
+                        depth_before + 1,
+                        started.elapsed().as_millis(),
+                        turn.text.chars().count()
+                    ),
+                )
+                .await;
+            Ok(turn.text)
+        }
+        Err(e) => {
+            state
+                .emit_log(
+                    "task",
+                    &format!("failed[{}]: {description}: {e}", depth_before + 1),
+                )
+                .await;
+            Err(format!("sub-agent failed: {e}"))
+        }
+    }
+}
+
+/// One attempt to reconnect all MCP servers and retry the same tool after a transport failure.
+async fn call_tool_with_mcp_recovery(
+    state: &AppState,
+    model_tool_name: &str,
+    provider: crate::modules::mcp::registry::Provider,
+    tool_name: String,
+    args: serde_json::Value,
+) -> Result<String, String> {
+    match provider.call_tool(&tool_name, args.clone()).await {
+        Ok(t) => Ok(t),
+        Err(e) if mcp_stdio_recoverable(&e) => {
+            state
+                .emit_log(
+                    "mcp",
+                    &format!(
+                        "tool `{model_tool_name}` transport error ({e}); rebuilding MCP registry"
+                    ),
+                )
+                .await;
+            crate::modules::mcp::service::rebuild_registry_into_state(state).await?;
+            let (p2, tn2, _, a2) = {
+                let reg = state.mcp.read().await;
+                reg.prepare_tool_invocation(model_tool_name, args)
+            }
+            .map_err(|prep| format!("mcp reconnected but invocation failed: {prep}"))?;
+            p2.call_tool(&tn2, a2).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// After `brave_web_search`, prefetch this many distinct result URLs (one search per message; extra bandwidth here is `fetch` only).
 const AUTO_FETCH_TOP_URLS: usize = search_followup::DEFAULT_AUTO_FETCH_CAP;
 
@@ -344,6 +454,68 @@ fn tool_call_arguments(call: &serde_json::Value) -> serde_json::Value {
         }
         Some(v) => v.clone(),
     }
+}
+
+/// MCP git tools (`git_branch`, `git_status`, …) require `repo_path` inside the container.
+/// Models often omit it; derive the mount root from workspace allow-list + host cwd (same rule as Tool Engine `/app/<label>`).
+async fn default_git_repo_container_path(state: &AppState) -> Option<String> {
+    if let Ok(p) = std::env::var("PENGINE_GIT_REPO_PATH") {
+        let t = p.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+
+    let roots = state.cached_filesystem_paths.read().await.clone();
+    if roots.is_empty() {
+        return None;
+    }
+
+    let pairs = workspace_app_bind_pairs(&roots);
+    let cwd = std::env::current_dir().ok()?;
+    let cwd_canon = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+
+    for (host, container) in &pairs {
+        let hp = Path::new(host.trim());
+        let hcanon = std::fs::canonicalize(hp).unwrap_or_else(|_| hp.to_path_buf());
+        if cwd_canon.starts_with(&hcanon) {
+            return Some(container.clone());
+        }
+    }
+
+    pairs.first().map(|(_, c)| c.clone())
+}
+
+fn merge_git_repo_path_args(
+    tool_flat_name: &str,
+    args: serde_json::Value,
+    default_repo: Option<&str>,
+) -> serde_json::Value {
+    if !tool_flat_name.starts_with("git_") {
+        return args;
+    }
+    let Some(default) = default_repo.map(str::trim).filter(|s| !s.is_empty()) else {
+        return args;
+    };
+
+    let mut map = match args {
+        serde_json::Value::Object(m) => m,
+        serde_json::Value::Null => serde_json::Map::new(),
+        _ => {
+            return json!({ "repo_path": default });
+        }
+    };
+
+    let needs_fill = match map.get("repo_path") {
+        None => true,
+        Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+        _ => false,
+    };
+    if needs_fill {
+        map.insert("repo_path".into(), json!(default));
+    }
+    serde_json::Value::Object(map)
 }
 
 fn fmt_duration(d: Duration) -> String {
@@ -678,7 +850,7 @@ async fn build_system_prompt(
 
     let fs_hint = {
         let paths = state.cached_filesystem_paths.read().await.clone();
-        if paths.is_empty() {
+        let mounts_line = if paths.is_empty() {
             String::new()
         } else {
             let mounts = workspace_app_bind_pairs(&paths)
@@ -687,7 +859,21 @@ async fn build_system_prompt(
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("\nFile tools: use /app/… paths only. Mounts: {mounts}.")
-        }
+        };
+        let discipline = if paths.is_empty() {
+            "\nFilesystem MCP: tools are functions — include **every** required argument from the schema (never `{}` when fields are required). For `directory_tree`, pass mandatory `path` as an absolute `/app/<folder>` under a configured mount."
+                .to_string()
+        } else {
+            let example = workspace_app_bind_pairs(&paths)
+                .first()
+                .map(|(_, c)| c.clone())
+                .unwrap_or_else(|| "/app/<folder>".into());
+            format!(
+                "\nFilesystem MCP: include every required argument. For **`directory_tree`**, always set **`path`** to an absolute mount root (example: `{example}`). \
+                 For **`git_*`** tools (git repo in container), set **`repo_path`** to that same mount root when the schema requires it (example: `{example}`)."
+            )
+        };
+        format!("{mounts_line}{discipline}")
     };
 
     let mem_hint = if has_memory {
@@ -937,7 +1123,10 @@ async fn run_model_turn(
             .emit_log("tool", &format!("{} tool call(s)", tool_calls.len()))
             .await;
 
-        // Resolve under one lock, then execute in parallel.
+        let git_repo_default = default_git_repo_container_path(state).await;
+
+        // Resolve under one lock, then execute in parallel (per-server stdio is serialized by
+        // [`crate::modules::mcp::transport::StdioTransport::rpc_mutex`]).
         let mut prepared = {
             let reg = state.mcp.read().await;
             tool_calls
@@ -949,7 +1138,11 @@ async fn run_model_turn(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let args = tool_call_arguments(call);
+                    let args = merge_git_repo_path_args(
+                        &name,
+                        tool_call_arguments(call),
+                        git_repo_default.as_deref(),
+                    );
                     let resolved = reg.prepare_tool_invocation(&name, args);
                     (name, resolved)
                 })
@@ -993,42 +1186,64 @@ async fn run_model_turn(
         state.note_tools_used(&invoked_names).await;
 
         let t0 = Instant::now();
-        let mut handles = Vec::with_capacity(prepared.len());
-        for (name, resolved) in &prepared {
+        // `task_spawn` recursively calls into [`run_model_turn`], whose future is `!Send`.
+        // Mixing it into the parallel `tokio::spawn` pool would fail to compile, so we run
+        // task-spawner calls serially inline before joining the spawned handles.
+        let mut results: Vec<Result<String, String>> = (0..prepared.len())
+            .map(|_| Err(String::new()))
+            .collect();
+        let mut spawned: Vec<(usize, tokio::task::JoinHandle<Result<String, String>>)> =
+            Vec::with_capacity(prepared.len());
+        for (i, (name, resolved)) in prepared.iter().enumerate() {
             state.emit_log("tool", &format!("[{step}] {name}")).await;
             match resolved {
                 Ok((provider, tool_name, _, args)) => {
-                    let (p, tn, a) = (provider.clone(), tool_name.clone(), args.clone());
-                    handles.push(tokio::spawn(async move { p.call_tool(&tn, a).await }));
+                    if matches!(
+                        provider,
+                        crate::modules::mcp::registry::Provider::Native(np)
+                            if np.server_name == crate::modules::mcp::native::TASK_SPAWNER_ID
+                    ) {
+                        results[i] = run_task_spawn_inline(state, args).await;
+                    } else {
+                        let state_bg = state.clone();
+                        let display_name = name.clone();
+                        let (p, tn, a) = (provider.clone(), tool_name.clone(), args.clone());
+                        spawned.push((
+                            i,
+                            tokio::spawn(async move {
+                                call_tool_with_mcp_recovery(&state_bg, &display_name, p, tn, a)
+                                    .await
+                            }),
+                        ));
+                    }
                 }
                 Err(e) => {
-                    let e = e.clone();
-                    handles.push(tokio::spawn(async move { Err(e) }));
+                    results[i] = Err(e.clone());
                 }
             }
+        }
+        for (i, handle) in spawned {
+            results[i] = match handle.await {
+                Ok(r) => r,
+                Err(e) => Err(format!("task panicked: {e}")),
+            };
         }
 
         let mut direct_replies: Vec<String> = Vec::new();
         let mut last_brave_search_blob: Option<String> = None;
-        for (i, handle) in handles.into_iter().enumerate() {
+        for (i, result) in results.into_iter().enumerate() {
             let (name, resolved) = &prepared[i];
-            let (text, is_direct) = match handle.await {
-                Ok(Ok(text)) => {
+            let (text, is_direct) = match result {
+                Ok(text) => {
                     let direct = resolved.as_ref().map(|(_, _, d, _)| *d).unwrap_or(false);
                     state
                         .emit_log("tool", &format!("{name}: {} bytes", text.len()))
                         .await;
                     (text, direct)
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     state.emit_log("tool", &format!("{name} error: {e}")).await;
                     (format!("ERROR: {e}"), false)
-                }
-                Err(e) => {
-                    state
-                        .emit_log("tool", &format!("{name} panicked: {e}"))
-                        .await;
-                    ("ERROR: task panicked".to_string(), false)
                 }
             };
 

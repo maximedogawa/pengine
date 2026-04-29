@@ -665,7 +665,11 @@ pub async fn rebuild_registry_into_state(
 
         // Ensure built-in native tools are always present (auto-add for existing configs).
         let mut inserted_any = false;
-        for id in [native::TOOL_MANAGER_ID, native::CRON_MANAGER_ID] {
+        for id in [
+            native::TOOL_MANAGER_ID,
+            native::CRON_MANAGER_ID,
+            native::TASK_SPAWNER_ID,
+        ] {
             if !cfg.servers.contains_key(id) {
                 cfg.servers
                     .insert(id.to_string(), ServerEntry::Native { id: id.to_string() });
