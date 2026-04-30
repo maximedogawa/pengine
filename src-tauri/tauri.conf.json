@@ -19,8 +19,6 @@
     "cli": {
       "description": "Pengine — control Ollama, Telegram bot, and MCP tools from the terminal.",
       "args": [
-        { "name": "no-terminal", "description": "Disable terminal output" },
-        { "name": "no-telegram", "description": "Disable Telegram output" },
         { "name": "json", "description": "Emit CliReply as versioned JSON" },
         {
           "name": "shell",
@@ -52,31 +50,8 @@
         "status": {
           "description": "Show bot, Ollama, and MCP status"
         },
-        "doctor": {
-          "description": "Run environment diagnostics (Ollama, MCP, keychain, store, network)"
-        },
-        "cost": {
-          "description": "Show token usage + estimated cost for the current session"
-        },
-        "resume": {
-          "description": "Resume the most recent saved REPL session"
-        },
-        "compact": {
-          "description": "Summarize the current session and reset turn history"
-        },
         "clear": {
           "description": "Clear the REPL screen (REPL-only; errors elsewhere)"
-        },
-        "plan": {
-          "description": "Toggle plan mode (read-only agent + planning system prompt)",
-          "args": [
-            {
-              "name": "action",
-              "description": "on | off | toggle (default toggle)",
-              "takesValue": true,
-              "index": 1
-            }
-          ]
         },
         "config": {
           "description": "Show or set user settings (e.g. skills_hint_max_bytes=12000)",
@@ -162,24 +137,6 @@
               "name": "path",
               "description": "Absolute path for add/remove",
               "takesValue": true,
-              "index": 2
-            }
-          ]
-        },
-        "mcp": {
-          "description": "List, add, remove, or import MCP servers",
-          "args": [
-            {
-              "name": "action",
-              "description": "list | add | remove | import (defaults to list)",
-              "takesValue": true,
-              "index": 1
-            },
-            {
-              "name": "rest",
-              "description": "Action arguments (forwarded to the parser; quote multi-word values)",
-              "takesValue": true,
-              "multiple": true,
               "index": 2
             }
           ]

@@ -1,24 +1,5 @@
-//! CLI entry branch — reads `tauri-plugin-cli` matches and dispatches.
-//!
-//! Invoked from `app::run` before any window is created. If no CLI subcommand
-//! is present, returns and setup continues into the normal UI path.
-//! Otherwise runs the handler, prints to the chosen sink, and exits the
-//! process. No Tauri event loop is needed for one-shot commands.
-//!
-//! **Bare `pengine`** (no subcommand): in a real terminal (**TTY**), starts the
-//! interactive REPL only — never the GUI in that process. Without a TTY the
-//! launch is treated as a GUI launch (Finder / Dock / `.desktop` file /
-//! Windows Start menu / `open -a pengine`) and setup continues into
-//! [`crate::app::open_main_window`].
-//!
-//! **`pengine app`** spawns a **separate** GUI process (`PENGINE_OPEN_GUI=1`) so
-//! the shell and the desktop can run in parallel.
-//!
-//! **`PENGINE_LAUNCH_MODE=cli`** (e.g. `pengine-cli` launcher) or **`--shell`**:
-//! never opens the GUI in-process. With no subcommand, a TTY is required for
-//! the REPL; without a TTY the process exits with an error instead.
-
 use super::output::{CliReply, JsonSink, OutputSink, TerminalSink};
+use super::session::{self, CliSession};
 use super::{commands, handlers};
 use crate::infrastructure::audit_log;
 use crate::modules::bot::repository as bot_repository;
@@ -31,29 +12,11 @@ use std::io::IsTerminal;
 use tauri::Manager;
 use tauri_plugin_cli::{ArgData, CliExt, Matches};
 
-/// Entry — call from Tauri `setup`. Returns in UI mode; in CLI mode the
-/// handler runs and [`std::process::exit`] is called.
-///
-/// Three paths, in priority order:
-/// 1. `--help` / auto-`help` subcommand — tauri-plugin-cli surfaces clap's
-///    generated text in `matches.args["help"]` (see its `parser.rs`).
-/// 2. `--version` — surfaces an empty `matches.args["version"]`.
-/// 3. A registered subcommand — dispatch via [`run_subcommand`].
-///
-/// Otherwise (bare `pengine`): **TTY** → REPL then exit; **not a TTY** → GUI
-/// (all platforms; covers Finder / Dock / `.desktop` / Start-menu launches).
-/// The `pengine-cli` launcher sets `PENGINE_LAUNCH_MODE=cli` (or `--shell`)
-/// so non-TTY never falls through to the GUI there.
 pub fn handle_cli_or_continue(app: &tauri::App) {
     if consume_gui_spawn_env() {
+        set_macos_activation_policy(app, tauri::ActivationPolicy::Regular);
         return;
     }
-
-    // Tauri defaults to `Regular` (foreground app with Dock icon). For CLI
-    // invocations we don't want a Dock entry at all — make the process an
-    // "accessory" up front. If we later decide this is a GUI launch (bare
-    // `pengine` with no TTY), `switch_to_gui_activation_policy` flips it back
-    // to `Regular` before we fall through to `setup`.
     set_macos_activation_policy(app, tauri::ActivationPolicy::Accessory);
 
     let matches = match app.cli().matches() {
@@ -90,7 +53,6 @@ pub fn handle_cli_or_continue(app: &tauri::App) {
         std::process::exit(0);
     }
 
-    // `-p` / `--print` short-circuits to a single agent turn and exits.
     if let Some(prompt) = single_string(&matches.args, "print") {
         let state = match build_state(app) {
             Ok(s) => s,
@@ -100,7 +62,7 @@ pub fn handle_cli_or_continue(app: &tauri::App) {
             }
         };
         if flag_true(&matches.args, "continue") {
-            if let Ok(Some(s)) = crate::modules::cli::session::load_last(&state.store_path) {
+            if let Some(s) = resume_session(&state) {
                 tauri::async_runtime::block_on(async {
                     *state.cli_session.write().await = Some(s);
                 });
@@ -134,12 +96,6 @@ pub fn handle_cli_or_continue(app: &tauri::App) {
                     std::process::exit(1);
                 }
                 if !tty {
-                    // Double-click from Finder / Dock / `.desktop` file /
-                    // Windows Start menu / `open -a pengine` all land here:
-                    // no CLI subcommand, no `-psn_` guarantee across platforms,
-                    // no TTY. Treat it as a GUI launch — flip the activation
-                    // policy back to `Regular` so the Dock icon appears, and
-                    // return so `setup` continues into `open_main_window`.
                     set_macos_activation_policy(app, tauri::ActivationPolicy::Regular);
                     return;
                 }
@@ -152,8 +108,7 @@ pub fn handle_cli_or_continue(app: &tauri::App) {
                     }
                 };
                 if flag_true(&matches.args, "continue") {
-                    if let Ok(Some(s)) = crate::modules::cli::session::load_last(&state.store_path)
-                    {
+                    if let Some(s) = resume_session(&state) {
                         tauri::async_runtime::block_on(async {
                             *state.cli_session.write().await = Some(s);
                         });
@@ -222,7 +177,6 @@ fn run_subcommand(app: &tauri::App, matches: Matches, sink: &dyn OutputSink) -> 
         _ => {}
     }
 
-    // Stateful commands: build a minimal AppState.
     let state = match build_state(app) {
         Ok(s) => s,
         Err(e) => {
@@ -253,14 +207,6 @@ async fn dispatch_stateful(
 ) -> CliReply {
     match name {
         "status" => handlers::status(state).await,
-        "doctor" => handlers::doctor(state).await,
-        "plan" => {
-            let action = single_string(args, "action");
-            handlers::plan(state, action.as_deref()).await
-        }
-        "cost" => handlers::cost(state).await,
-        "resume" => handlers::resume(state).await,
-        "compact" => handlers::compact(state).await,
         "clear" => handlers::clear(),
         "config" => {
             let kvs = multi_string(args, "kv");
@@ -292,12 +238,6 @@ async fn dispatch_stateful(
             let search = single_string(args, "search");
             handlers::tools(state, search.as_deref()).await
         }
-        "mcp" => {
-            let action = single_string(args, "action").unwrap_or_default();
-            let rest_tokens = multi_string(args, "rest");
-            let rest = shellish_join(&rest_tokens);
-            super::mcp_cmd::run_from_args(state, action.trim(), rest.trim()).await
-        }
         "skills" => {
             let action = single_string(args, "action");
             let slug = single_string(args, "slug");
@@ -320,11 +260,13 @@ async fn dispatch_stateful(
             }
             let cont = flag_true(args, "continue");
             if cont {
-                if let Ok(Some(s)) = crate::modules::cli::session::load_last(&state.store_path) {
+                if let Some(s) = resume_session(state) {
                     *state.cli_session.write().await = Some(s);
                 }
             }
-            handlers::ask_in_session(state, &text, cont).await
+            // One-shot `pengine ask` should still create/persist a CLI session
+            // so token accounting and memory-aware routing are consistent.
+            handlers::ask_in_session(state, &text, true).await
         }
         other => CliReply::error(format!("unknown subcommand `{other}`")),
     }
@@ -365,12 +307,7 @@ fn cli_subcommand_audit_summary(
     let mut out = String::from("pengine ");
     out.push_str(name);
     match name {
-        "status" | "app" | "doctor" | "cost" | "resume" | "compact" | "clear" => {}
-        "plan" => {
-            if let Some(a) = single_string(args, "action") {
-                let _ = write!(out, " {}", truncate_audit_str(&a, 32));
-            }
-        }
+        "status" | "app" | "clear" => {}
         "config" => {
             let kvs = multi_string(args, "kv");
             if !kvs.is_empty() {
@@ -417,16 +354,6 @@ fn cli_subcommand_audit_summary(
                 let _ = write!(out, " {}", truncate_audit_str(&p, 400));
             }
         }
-        "mcp" => {
-            if let Some(a) = single_string(args, "action") {
-                let _ = write!(out, " {}", truncate_audit_str(&a, 32));
-            }
-            let rest = multi_string(args, "rest");
-            if !rest.is_empty() {
-                let joined = rest.join(" ");
-                let _ = write!(out, " {}", truncate_audit_str(&joined, 400));
-            }
-        }
         "logs" => {
             if flag_true(args, "follow") {
                 out.push_str(" --follow");
@@ -446,12 +373,6 @@ fn cli_subcommand_audit_summary(
     out
 }
 
-/// Best-effort hydration for one-shot CLI mode:
-/// - status should reflect persisted bot metadata
-/// - disconnect should have bot_id available for keychain cleanup
-///
-/// If keychain unlock fails, we still carry bot_id/bot_username with an empty
-/// token so metadata-aware commands keep behaving deterministically.
 fn hydrate_connection_from_disk(state: &AppState) {
     let mut migration_log: Vec<String> = Vec::new();
     let Some(meta) = bot_repository::load(&state.store_path, &mut migration_log) else {
@@ -472,28 +393,26 @@ fn flag_true(args: &HashMap<String, ArgData>, name: &str) -> bool {
     matches!(args.get(name).map(|a| &a.value), Some(Value::Bool(true)))
 }
 
+/// Resolve `--continue`: prefer the most recent session whose project matches
+/// the current cwd (or its git toplevel) so resuming from a different folder
+/// keeps the right context. Fall back to the global most-recent session for
+/// first-time use after upgrading from a build that did not record project
+/// context.
+fn resume_session(state: &AppState) -> Option<CliSession> {
+    if let Ok(cwd) = std::env::current_dir() {
+        let project = session::detect_project_context(&cwd);
+        if let Ok(Some(s)) = session::load_last_for_path(&state.store_path, project.match_key()) {
+            return Some(s);
+        }
+    }
+    session::load_last(&state.store_path).ok().flatten()
+}
+
 fn single_string(args: &HashMap<String, ArgData>, name: &str) -> Option<String> {
     match args.get(name)?.value {
         Value::String(ref s) => Some(s.clone()),
         _ => None,
     }
-}
-
-/// Re-join argv-style tokens into a single string the slash dispatch parser
-/// can re-tokenize. Only quotes tokens that contain whitespace; everything
-/// else passes through verbatim so simple flags stay readable in audit logs.
-fn shellish_join(tokens: &[String]) -> String {
-    tokens
-        .iter()
-        .map(|t| {
-            if t.chars().any(char::is_whitespace) {
-                format!("\"{}\"", t.replace('"', "\\\""))
-            } else {
-                t.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn multi_string(args: &HashMap<String, ArgData>, name: &str) -> Vec<String> {
@@ -528,8 +447,6 @@ fn argv_intent() -> ArgvIntent {
     argv_intent_from(std::env::args().skip(1))
 }
 
-/// When the user runs `pengine help <topic>` (or `pengine --help <topic>`),
-/// return `<topic>`. Returns `None` if no topic word is present after the help token.
 fn help_topic_from_argv() -> Option<String> {
     let mut iter = std::env::args().skip(1).filter(|a| !is_ignored_os_arg(a));
     while let Some(a) = iter.next() {
@@ -560,8 +477,7 @@ where
     match first.as_str() {
         "--help" | "-h" | "help" => ArgvIntent::Help,
         "--version" | "-V" | "version" => ArgvIntent::Version,
-        "--json" | "--no-terminal" | "--no-telegram" | "--continue" | "-p" | "--print"
-        | "--output-format" => ArgvIntent::CommandLike,
+        "--json" | "--continue" | "-p" | "--print" | "--output-format" => ArgvIntent::CommandLike,
         other if !other.starts_with('-') && commands::lookup(other).is_some() => {
             ArgvIntent::CommandLike
         }
@@ -582,12 +498,6 @@ fn is_ignored_os_arg(arg: &str) -> bool {
     }
 }
 
-/// On macOS, set NSApp's activation policy. No-op on other platforms.
-///
-/// `Accessory` removes the process from the Dock / Cmd-Tab; perfect for CLI
-/// invocations that don't show a window. `Regular` restores the normal
-/// foreground-app behavior (Dock icon + menu bar), used when bare `pengine`
-/// turns out to be a GUI launch after all.
 fn set_macos_activation_policy(app: &tauri::App, policy: tauri::ActivationPolicy) {
     #[cfg(target_os = "macos")]
     {
@@ -601,7 +511,6 @@ fn set_macos_activation_policy(app: &tauri::App, policy: tauri::ActivationPolicy
     }
 }
 
-/// Second process spawned by `pengine app`; strip markers then continue into full Tauri setup.
 fn consume_gui_spawn_env() -> bool {
     if std::env::var("PENGINE_OPEN_GUI")
         .map(|v| v == "1")
@@ -614,7 +523,6 @@ fn consume_gui_spawn_env() -> bool {
     false
 }
 
-/// Start the desktop app in a **new** process so the current terminal can keep a REPL (or exit).
 pub(super) fn spawn_gui_app_process() -> Result<(), String> {
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;

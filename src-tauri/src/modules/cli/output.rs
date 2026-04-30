@@ -84,6 +84,12 @@ pub struct JsonEnvelope<'a> {
 /// Rendering target. Implementers must be thread-safe for later FanOut usage.
 pub trait OutputSink: Send + Sync {
     fn render(&self, reply: &CliReply);
+
+    /// When true, [`render_with_prefix`] may print unified diffs line-by-line with ANSI
+    /// (so `+`/`-` detection still works alongside REPL indentation). JSON sinks keep `false`.
+    fn prefer_line_oriented_diff(&self) -> bool {
+        false
+    }
 }
 
 /// Default: ANSI colors on TTYs, plain text otherwise. Prompt lines ("user@pengine:~$")
@@ -112,6 +118,10 @@ impl Default for TerminalSink {
 }
 
 impl OutputSink for TerminalSink {
+    fn prefer_line_oriented_diff(&self) -> bool {
+        self.color
+    }
+
     fn render(&self, reply: &CliReply) {
         match &reply.kind {
             ReplyKind::Text => println!("{}", reply.body),
@@ -129,19 +139,8 @@ impl OutputSink for TerminalSink {
                 }
             }
             ReplyKind::CodeBlock { lang } => {
-                if self.color {
-                    if let Some(lines) =
-                        super::syntax_highlight::highlight_fence_body(lang, &reply.body)
-                    {
-                        for line in &lines {
-                            println!("{line}\x1b[0m");
-                        }
-                    } else {
-                        println!("{}", reply.body);
-                    }
-                } else {
-                    println!("{}", reply.body);
-                }
+                let _ = lang;
+                println!("{}", reply.body);
             }
             ReplyKind::Log => {
                 println!("{}", reply.body);
@@ -170,17 +169,51 @@ impl OutputSink for JsonSink {
     }
 }
 
+/// Dark-terminal palette (truecolor + bold). Background strips improve scanability on
+/// charcoal backgrounds without relying on low-contrast default 16-color green/red.
+const DIFF_RESET: &str = "\x1b[0m";
+const DIFF_CTX: &str = "\x1b[38;2;139;148;158m"; // muted slate (context)
+const DIFF_META: &str = "\x1b[38;2;180;190;200m"; // diff --git, index, rename…
+const DIFF_FILE_HDR: &str = "\x1b[1;38;2;121;192;255m"; // +++ / ---
+const DIFF_HUNK: &str = "\x1b[1;38;2;242;204;96m"; // @@ hunk headers
+const DIFF_ADD_FG: &str = "\x1b[38;2;80;250;123m";
+const DIFF_ADD_BG: &str = "\x1b[48;2;20;45;28m";
+const DIFF_DEL_FG: &str = "\x1b[38;2;255;123;123m";
+const DIFF_DEL_BG: &str = "\x1b[48;2;45;22;24m";
+
+fn style_diff_line(line: &str) -> String {
+    if line.starts_with("+++") || line.starts_with("---") {
+        return format!("{DIFF_FILE_HDR}{line}{DIFF_RESET}");
+    }
+    if line.starts_with("@@") {
+        return format!("{DIFF_HUNK}{line}{DIFF_RESET}");
+    }
+    if line.starts_with('+') {
+        return format!("{DIFF_ADD_BG}{DIFF_ADD_FG}{line}{DIFF_RESET}");
+    }
+    if line.starts_with('-') {
+        return format!("{DIFF_DEL_BG}{DIFF_DEL_FG}{line}{DIFF_RESET}");
+    }
+    if line.starts_with("diff --git ")
+        || line.starts_with("index ")
+        || line.starts_with("new file mode ")
+        || line.starts_with("deleted file mode ")
+        || line.starts_with("similarity index ")
+        || line.starts_with("rename from ")
+        || line.starts_with("rename to ")
+        || line.starts_with("Binary files ")
+    {
+        return format!("{DIFF_META}{line}{DIFF_RESET}");
+    }
+    if line.is_empty() {
+        return String::new();
+    }
+    format!("{DIFF_CTX}{line}{DIFF_RESET}")
+}
+
 fn print_diff_with_ansi(body: &str) {
     for line in body.lines() {
-        if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
-            println!("\x1b[1;36m{line}\x1b[0m"); // cyan, bold for headers
-        } else if line.starts_with('+') {
-            println!("\x1b[32m{line}\x1b[0m"); // green
-        } else if line.starts_with('-') {
-            println!("\x1b[31m{line}\x1b[0m"); // red
-        } else {
-            println!("{line}");
-        }
+        println!("{}", style_diff_line(line));
     }
 }
 
@@ -282,51 +315,11 @@ fn render_reply_indented(sink: &dyn OutputSink, reply: &CliReply) {
                 } else {
                     FirstPrefix::None
                 };
-                match &part.kind {
-                    ReplyKind::CodeBlock { .. } => {
-                        try_render_highlighted_code_block(sink, part, prefix);
-                    }
-                    _ => render_with_prefix(sink, part, prefix),
-                }
+                render_with_prefix(sink, part, prefix);
             }
         }
-        ReplyKind::CodeBlock { .. } => {
-            try_render_highlighted_code_block(sink, reply, FirstPrefix::Repl);
-        }
+        ReplyKind::CodeBlock { .. } => render_with_prefix(sink, reply, FirstPrefix::Repl),
         _ => render_with_prefix(sink, reply, FirstPrefix::Repl),
-    }
-}
-
-/// When stdout is a TTY, paint fenced code with a dark theme; otherwise indent as plain text.
-fn try_render_highlighted_code_block(sink: &dyn OutputSink, reply: &CliReply, first: FirstPrefix) {
-    let ReplyKind::CodeBlock { lang } = &reply.kind else {
-        render_with_prefix(sink, reply, first);
-        return;
-    };
-    if is_terminal_stdout() {
-        if let Some(lines) = super::syntax_highlight::highlight_fence_body(lang, &reply.body) {
-            print_highlighted_lines_prefixed(&lines, first);
-            return;
-        }
-    }
-    render_with_prefix(sink, reply, first);
-}
-
-fn print_highlighted_lines_prefixed(lines: &[String], first: FirstPrefix) {
-    let color = is_terminal_stdout();
-    let (first_p, cont_p) = match first {
-        FirstPrefix::Repl => {
-            if color {
-                (REPL_FIRST_PREFIX, REPL_CONT_PREFIX)
-            } else {
-                (REPL_FIRST_PREFIX_PLAIN, REPL_CONT_PREFIX)
-            }
-        }
-        FirstPrefix::None => (REPL_CONT_PREFIX, REPL_CONT_PREFIX),
-    };
-    for (i, line) in lines.iter().enumerate() {
-        let p = if i == 0 { first_p } else { cont_p };
-        println!("{p}{line}\x1b[0m");
     }
 }
 
@@ -339,6 +332,11 @@ enum FirstPrefix {
 }
 
 fn render_with_prefix(sink: &dyn OutputSink, reply: &CliReply, first: FirstPrefix) {
+    if matches!(reply.kind, ReplyKind::Diff) && sink.prefer_line_oriented_diff() {
+        render_diff_with_repl_prefix(reply.body.as_str(), first);
+        return;
+    }
+
     let color = is_terminal_stdout();
     let (first_prefix, cont_prefix) = match first {
         FirstPrefix::Repl => {
@@ -377,6 +375,26 @@ fn indent_body(body: &str, first_prefix: &str, cont_prefix: &str) -> String {
         out.push_str(line);
     }
     out
+}
+
+/// REPL-style prefixes on each line, with per-line diff ANSI (adds/removes stay highlighted).
+fn render_diff_with_repl_prefix(body: &str, first: FirstPrefix) {
+    let color = is_terminal_stdout();
+    let (first_prefix, cont_prefix) = match first {
+        FirstPrefix::Repl => {
+            if color {
+                (REPL_FIRST_PREFIX, REPL_CONT_PREFIX)
+            } else {
+                (REPL_FIRST_PREFIX_PLAIN, REPL_CONT_PREFIX)
+            }
+        }
+        FirstPrefix::None => (REPL_CONT_PREFIX, REPL_CONT_PREFIX),
+    };
+    for (i, line) in body.lines().enumerate() {
+        let p = if i == 0 { first_prefix } else { cont_prefix };
+        let body_line = style_diff_line(line);
+        println!("{p}{body_line}");
+    }
 }
 
 static MD_FENCE_RE: OnceLock<Regex> = OnceLock::new();
@@ -690,5 +708,28 @@ mod tests {
             "bash", "echo hi"
         )));
         assert!(repl_reply_use_section_chrome(&CliReply::diff("+x")));
+    }
+
+    #[test]
+    fn style_diff_line_tags_add_remove_and_hunk() {
+        let add = super::style_diff_line("+foo");
+        assert!(add.contains("+foo"));
+        assert!(add.contains("\x1b[48;2;20;45;28m"), "add line uses dark green bg");
+        let del = super::style_diff_line("-bar");
+        assert!(del.contains("-bar"));
+        assert!(del.contains("\x1b[48;2;45;22;24m"), "del line uses dark red bg");
+        let hunk = super::style_diff_line("@@ -1,2 +1,3 @@");
+        assert!(hunk.contains("@@"));
+        assert!(hunk.contains("\x1b[1;38;2;242;204;96m"));
+        let ctx = super::style_diff_line(" context");
+        assert!(ctx.contains("context"));
+        assert!(ctx.contains("\x1b[38;2;139;148;158m"));
+    }
+
+    #[test]
+    fn style_diff_line_file_headers_not_confused_with_plus() {
+        let hdr = super::style_diff_line("+++ b/src/main.rs");
+        assert!(hdr.contains("+++"));
+        assert!(!hdr.contains("\x1b[48;2;20;45;28m"), "+++ must not use add-line bg");
     }
 }

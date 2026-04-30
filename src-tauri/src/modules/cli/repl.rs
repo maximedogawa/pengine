@@ -9,6 +9,7 @@ use super::dispatch::{dispatch_line, format_repl_line_for_audit, DispatchContext
 use super::flavor;
 use super::folder_trust::{self, PromptOutcome};
 use super::output::{render_reply, CliReply, OutputSink, RenderStyle, TerminalSink};
+use super::session::{self, CliSession};
 use crate::modules::mcp::service as mcp_service;
 use crate::shared::state::AppState;
 use rustyline::error::ReadlineError;
@@ -34,13 +35,38 @@ const PROMPT_PLAIN: &str = "> ";
 
 pub async fn run(state: &AppState) -> CliReply {
     let sink = TerminalSink::new();
+
+    // Capture project context (cwd + git root + branch) and preset the
+    // session so banners, persistence, and per-folder `--continue` all
+    // use the same identity. If `--continue` already loaded a session
+    // for this folder, keep it; otherwise create a fresh one.
+    let project = std::env::current_dir()
+        .ok()
+        .map(|cwd| session::detect_project_context(&cwd));
+    {
+        let mut guard = state.cli_session.write().await;
+        match guard.as_mut() {
+            Some(existing) if existing.project.is_none() => {
+                existing.project = project.clone();
+            }
+            Some(_) => {}
+            None => {
+                *guard = Some(match project.clone() {
+                    Some(p) => CliSession::fresh_with_project(p),
+                    None => CliSession::fresh(),
+                });
+            }
+        }
+    }
+
     sink.render(&CliReply::text(format!(
         "{}\
 \n\
 Pengine REPL — slash commands + free text; /exit or Ctrl+D to quit.\n\
-store:     {}",
+store:     {}{}",
         CLI_WELCOME.trim_start_matches('\n'),
-        state.store_path.display()
+        state.store_path.display(),
+        format_project_banner_lines(project.as_ref()),
     )));
     if std::io::stdout().is_terminal() {
         sink.render(&CliReply::text(format!(
@@ -249,4 +275,64 @@ fn history_path(store_path: &std::path::Path) -> PathBuf {
 fn is_exit(line: &str) -> bool {
     let t = line.trim();
     matches!(t, "/exit" | "/quit" | "exit" | "quit")
+}
+
+/// Render the `project:` and `branch:` banner lines, abbreviating `$HOME` to
+/// `~` so the start screen stays readable on long paths. Returns an empty
+/// string when there is no project context (no cwd available).
+fn format_project_banner_lines(project: Option<&session::ProjectContext>) -> String {
+    let Some(project) = project else {
+        return String::new();
+    };
+    let display_root = project.git_root.as_deref().unwrap_or(project.cwd.as_path());
+    let project_str = abbreviate_home(display_root);
+    let mut out = format!("\nproject:   {project_str}");
+    if let Some(branch) = project.git_branch.as_deref() {
+        out.push_str(&format!("\nbranch:    {branch}"));
+    }
+    out
+}
+
+fn abbreviate_home(p: &std::path::Path) -> String {
+    let raw = p.to_string_lossy();
+    if let Ok(home) = std::env::var("HOME") {
+        if let Some(rest) = raw.strip_prefix(&home) {
+            return format!("~{rest}");
+        }
+    }
+    raw.into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn banner_empty_for_no_project() {
+        assert_eq!(format_project_banner_lines(None), "");
+    }
+
+    #[test]
+    fn banner_shows_project_and_branch() {
+        let p = session::ProjectContext {
+            cwd: std::path::PathBuf::from("/tmp/repo/sub"),
+            git_root: Some(std::path::PathBuf::from("/tmp/repo")),
+            git_branch: Some("main".into()),
+        };
+        let out = format_project_banner_lines(Some(&p));
+        assert!(out.contains("project:   /tmp/repo"));
+        assert!(out.contains("branch:    main"));
+    }
+
+    #[test]
+    fn banner_omits_branch_outside_repo() {
+        let p = session::ProjectContext {
+            cwd: std::path::PathBuf::from("/tmp/loose"),
+            git_root: None,
+            git_branch: None,
+        };
+        let out = format_project_banner_lines(Some(&p));
+        assert!(out.contains("project:   /tmp/loose"));
+        assert!(!out.contains("branch:"));
+    }
 }

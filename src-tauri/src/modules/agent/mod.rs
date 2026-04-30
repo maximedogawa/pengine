@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 /// `fetch` calls) otherwise exhaust the loop and fall through to summarize, which
 /// used to drop URLs and paraphrase loosely.
 const MAX_STEPS: usize = 6;
+/// When the user asks to **apply** fixes (pre-commit, lint, edit files), allow more tool rounds:
+/// read → write → verify (`git_diff`) without hitting the step cap early.
+const MAX_STEPS_APPLY_FIX: usize = 10;
 
 /// Brave Search web calls are billed; allow at most one `brave_web_search` per user message
 /// (across all agent steps). Other Brave tools are unchanged.
@@ -36,6 +39,9 @@ Do not call `fetch` again for the same URL. Answer from the prior tool output (o
 /// cap bounds wall time if it drafts a long `<pengine_plan>`. ~1024 fits a
 /// concise multilingual answer in most cases.
 const POST_TOOL_NUM_PREDICT: u32 = 1024;
+/// Larger cap when the user expects file mutations (edit/write + diff); avoids the model
+/// exhausting tokens while planning the next tool call.
+const POST_TOOL_NUM_PREDICT_APPLY_FIX: u32 = 2048;
 const POST_TOOL_TEMPERATURE: f32 = 0.35;
 
 /// Fallback summarize pass when the tool loop exits without a user-visible reply.
@@ -55,12 +61,20 @@ const SUMMARY_SYSTEM_PROMPT: &str = "You synthesize tool results for the user. R
 5) Keep the body concise but do not drop **Quellen** to save space.\n\
 6) No chain-of-thought, planning, or English meta: write only text that should appear in the user's chat bubble.";
 
+const APPLY_FIX_CONTINUE_AFTER_PROSE: &str = "CONTINUE (apply-fix): This turn is **not** finished. Either you have not called **`edit_file`** / **`write_file`** yet, or the **latest** tool output still shows a compile/clippy/lint/pre-commit failure. \
+Your next step must be **tool calls** that patch the repo (use absolute **`/app/...`** paths), then re-check with **`git_diff`** or the same command if needed. \
+Do not reply with meta-commentary about output formats, schemas, or \"no task\" — fix the files the log points at (e.g. clippy `file.rs:line`).";
+
+const APPLY_FIX_CONTINUE_AFTER_EMPTY: &str = "CONTINUE (apply-fix): You returned no assistant text and no tool calls after tool results. \
+Use **`edit_file`** / **`write_file`** to fix the failures shown in the latest tool output, then verify.";
+
 /// When the MCP catalog is empty and the user did not enable `/think`, constrain the model to JSON
 /// `{\"reply\":...}` so the host can take a single user-visible field (same schema as the summarize pass).
 fn chat_options_for_agent_step(
     post_tool: bool,
     user_wants_think: bool,
     json_only_user_reply: bool,
+    apply_fix_flow: bool,
 ) -> ChatOptions {
     let format = (json_only_user_reply && !user_wants_think)
         .then_some(ollama::summarize_reply_json_schema());
@@ -73,9 +87,14 @@ fn chat_options_for_agent_step(
             ..ChatOptions::default()
         }
     } else {
+        let cap = if apply_fix_flow {
+            POST_TOOL_NUM_PREDICT_APPLY_FIX
+        } else {
+            POST_TOOL_NUM_PREDICT
+        };
         ChatOptions {
             think: Some(false),
-            num_predict: Some(POST_TOOL_NUM_PREDICT),
+            num_predict: Some(cap),
             temperature: Some(POST_TOOL_TEMPERATURE),
             format,
             ..ChatOptions::default()
@@ -497,7 +516,77 @@ fn mcp_tool_base_name(full_name: &str) -> &str {
         .unwrap_or(full_name)
 }
 
-/// Merged into `directory_tree` when absent or empty — keeps scans inside host RPC timeouts.
+/// User wants **real edits** (not just review prose): pre-commit, formatters, linters, "apply fix", etc.
+fn message_implies_apply_repo_fix(msg: &str) -> bool {
+    const HINTS: &[&str] = &[
+        "pre-commit",
+        "precommit",
+        "lint-staged",
+        "lint staged",
+        "husky",
+        "rustfmt",
+        "cargo fmt",
+        "clippy",
+        "cargo clippy",
+        "eslint",
+        "prettier",
+        "fix the issue",
+        "fix pre-commit",
+        "fix precommit",
+        "apply the fix",
+        "apply fixes",
+        "edit the file",
+        "edit the files",
+        "make the change",
+        "update the file",
+        "patch the file",
+    ];
+    HINTS
+        .iter()
+        .any(|h| skills::user_message_needle_match(msg, h))
+}
+
+fn tool_invocation_writes_files(model_tool_name: &str) -> bool {
+    let b = mcp_tool_base_name(model_tool_name);
+    b.eq_ignore_ascii_case("edit_file")
+        || b.eq_ignore_ascii_case("write_file")
+        || b.eq_ignore_ascii_case("create_directory")
+        || b.eq_ignore_ascii_case("move_file")
+}
+
+/// True when tool output still looks like an unresolved Rust/clippy/pre-commit failure.
+/// Used to avoid ending the apply-fix loop on prose-only or meta replies while the last
+/// command output is still red.
+fn tool_output_implies_unresolved_failure(body: &str) -> bool {
+    let b = body;
+    b.contains("could not compile")
+        || b.contains("clippy::")
+        || b.contains("exited with code 101")
+        || b.contains("script \"rust:lint\" exited")
+        || b.contains("pre-commit script failed")
+        || b.contains("husky - pre-commit")
+        || b.contains("error[E0")
+        || (b.contains("error: ") && b.contains("-->") && b.contains(".rs:"))
+}
+
+/// Apply-fix turn is unfinished if we never wrote, or the **latest** tool payload still
+/// looks like a failing check (so we do not keep looping after a successful `edit_file`
+/// just because an older clippy blob remains earlier in `tool_results`).
+fn apply_fix_turn_unfinished(
+    tool_results: &[(String, String)],
+    all_invoked: &[String],
+) -> bool {
+    let wrote = all_invoked
+        .iter()
+        .any(|n| tool_invocation_writes_files(n));
+    let last_failed = tool_results
+        .last()
+        .is_some_and(|(_, body)| tool_output_implies_unresolved_failure(body));
+    !wrote || last_failed
+}
+
+/// Merged into `directory_tree` / `search_files` when absent or empty — keeps scans inside host
+/// RPC timeouts (a `search_files` over a `node_modules`-heavy repo otherwise hits the 90s ceiling).
 /// Patterns follow `@modelcontextprotocol/server-filesystem` (minimatch on paths under `path`).
 const DIRECTORY_TREE_DEFAULT_EXCLUDES: &[&str] = &[
     "**/node_modules/**",
@@ -569,11 +658,14 @@ fn merge_filesystem_mcp_path_args(
         return args;
     };
 
+    let inject_excludes =
+        base.eq_ignore_ascii_case("directory_tree") || base.eq_ignore_ascii_case("search_files");
+
     let mut map = match args {
         serde_json::Value::Object(m) => m,
         serde_json::Value::Null => serde_json::Map::new(),
         _ => {
-            if base.eq_ignore_ascii_case("directory_tree") {
+            if inject_excludes {
                 let mut m = serde_json::Map::new();
                 m.insert("path".into(), json!(default));
                 merge_directory_tree_exclude_patterns(&mut m);
@@ -592,7 +684,7 @@ fn merge_filesystem_mcp_path_args(
     if needs_fill {
         map.insert("path".into(), json!(default));
     }
-    if base.eq_ignore_ascii_case("directory_tree") {
+    if inject_excludes {
         merge_directory_tree_exclude_patterns(&mut map);
     }
     serde_json::Value::Object(map)
@@ -962,31 +1054,99 @@ async fn build_system_prompt(
     }
 
     let fs_hint = {
-        let paths = state.cached_filesystem_paths.read().await.clone();
-        let mounts_line = if paths.is_empty() {
+        // Gate on whether the filesystem MCP server is actually connected — checking
+        // `workspace_roots` alone wrongly advertises `directory_tree`/`list_directory`
+        // when the file-manager Tool Engine is not installed, leading the model to
+        // hallucinate calls that resolve to `tool not found`.
+        let has_fs_tool = {
+            let reg = state.mcp.read().await;
+            reg.tool_names().iter().any(|n| {
+                let short = n.rsplit_once('.').map(|(_, t)| t).unwrap_or(n.as_str());
+                matches!(
+                    short,
+                    "directory_tree"
+                        | "list_directory"
+                        | "list_directory_with_sizes"
+                        | "read_text_file"
+                        | "search_files"
+                )
+            })
+        };
+        if !has_fs_tool {
             String::new()
         } else {
-            let mounts = workspace_app_bind_pairs(&paths)
-                .iter()
-                .map(|(_, cpath)| cpath.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("\nFile tools: use /app/… paths only. Mounts: {mounts}.")
+            let paths = state.cached_filesystem_paths.read().await.clone();
+            let mounts_line = if paths.is_empty() {
+                String::new()
+            } else {
+                let mounts = workspace_app_bind_pairs(&paths)
+                    .iter()
+                    .map(|(_, cpath)| cpath.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("\nFile tools: use /app/… paths only. Mounts: {mounts}.")
+            };
+            let discipline = if paths.is_empty() {
+                "\nFilesystem MCP: tools are functions — include **every** required argument from the schema (never `{}` when fields are required). For `directory_tree`, pass mandatory `path` as an absolute `/app/<folder>` under a configured mount. Recursive trees over large repos time out: prefer **`list_directory`** / **`search_files`** on a narrow path, or pass **`excludePatterns`** (e.g. `**/node_modules/**`, `**/.git/**`, `**/target/**`)."
+                    .to_string()
+            } else {
+                let example = workspace_app_bind_pairs(&paths)
+                    .first()
+                    .map(|(_, c)| c.clone())
+                    .unwrap_or_else(|| "/app/<folder>".into());
+                format!(
+                    "\nFilesystem MCP: include every required argument. For **`directory_tree`**, set **`path`** to an absolute mount root (example: `{example}`); avoid scanning the whole repo at once — use **`excludePatterns`** (`**/node_modules/**`, `**/.git/**`, …) or **`list_directory`** / **`search_files`** on subpaths first. \
+                     For **`git_*`** tools (git repo in container), set **`repo_path`** to that same mount root when the schema requires it (example: `{example}`)."
+                )
+            };
+            format!("{mounts_line}{discipline}")
+        }
+    };
+
+    // Code-change hint: when the user asks for a review, fix, refactor, or any change to
+    // files in the repo, apply edits with `edit_file`/`write_file` and end with a `git_diff`
+    // embedded inside `<pengine_reply>`. Without this, the model defaults to a static
+    // markdown summary even when write+diff tools are in the catalog.
+    let code_edit_hint = {
+        let reg = state.mcp.read().await;
+        let names = reg.tool_names();
+        let has_short = |target: &str| {
+            names.iter().any(|n| {
+                let short = n.rsplit_once('.').map(|(_, t)| t).unwrap_or(n.as_str());
+                short.eq_ignore_ascii_case(target)
+            })
         };
-        let discipline = if paths.is_empty() {
-            "\nFilesystem MCP: tools are functions — include **every** required argument from the schema (never `{}` when fields are required). For `directory_tree`, pass mandatory `path` as an absolute `/app/<folder>` under a configured mount. Recursive trees over large repos time out: prefer **`list_directory`** / **`search_files`** on a narrow path, or pass **`excludePatterns`** (e.g. `**/node_modules/**`, `**/.git/**`, `**/target/**`)."
-                .to_string()
+        let has_edit = has_short("edit_file") || has_short("write_file");
+        let has_diff = has_short("git_diff")
+            || has_short("git_diff_unstaged")
+            || has_short("git_diff_staged")
+            || has_short("git_status");
+        let base = if has_edit && has_diff {
+            "\nCode changes: when the user asks for a review with changes, a fix, a refactor, or any \
+             modification to repo files, **apply the change yourself** with **`edit_file`** / **`write_file`** \
+             — do not write a markdown summary describing what to change. After editing, call **`git_diff`** \
+             (unstaged) and embed the diff inside `<pengine_reply>` as a fenced ```diff block, followed by a \
+             brief one-line rationale per file. If the user only asked for a review without changes, answer \
+             with prose only and do not edit."
+        } else if has_edit {
+            "\nCode changes: when the user asks for changes/fixes/refactors, apply them yourself with \
+             **`edit_file`** / **`write_file`** instead of describing them. End with a short bullet list of the \
+             files you changed."
         } else {
-            let example = workspace_app_bind_pairs(&paths)
-                .first()
-                .map(|(_, c)| c.clone())
-                .unwrap_or_else(|| "/app/<folder>".into());
-            format!(
-                "\nFilesystem MCP: include every required argument. For **`directory_tree`**, set **`path`** to an absolute mount root (example: `{example}`); avoid scanning the whole repo at once — use **`excludePatterns`** (`**/node_modules/**`, `**/.git/**`, …) or **`list_directory`** / **`search_files`** on subpaths first. \
-                 For **`git_*`** tools (git repo in container), set **`repo_path`** to that same mount root when the schema requires it (example: `{example}`)."
-            )
+            ""
         };
-        format!("{mounts_line}{discipline}")
+        let apply_fix = if message_implies_apply_repo_fix(user_message) && has_edit {
+            "\n**Apply-fix order (pre-commit / lint / format):** (1) read or search if needed; (2) **you must \
+             call `edit_file` or `write_file` at least once** using an absolute `/app/…` path; (3) then \
+             **`git_diff`** (unstaged) to verify. Showing **`git_diff`** alone after **`cargo fmt`** or other \
+             tools ran **outside** the model is not enough — if the user asked to fix pre-commit, **you** must \
+             write the corrected file contents via tools before finishing. If **`cargo clippy`**, **`rust:lint`**, \
+             or **husky/pre-commit** output shows errors, your **very next** step is always an **edit** tool on \
+             the file and line cited — never stop with meta text about response formats."
+        } else {
+            ""
+        };
+        format!("{base}{apply_fix}")
     };
 
     let mem_hint = if has_memory {
@@ -1026,11 +1186,11 @@ async fn build_system_prompt(
     }
 
     format!(
-        "{PENGINE_OUTPUT_CONTRACT_LEAD}Assistant with tools. Call a tool only for external data; otherwise answer directly. \
+        "{PENGINE_OUTPUT_CONTRACT_LEAD}Assistant with tools. Use tools to fetch external data **or to act on the user's repository (read, edit, diff, commit)**; otherwise answer directly. \
          After tool results, answer immediately. Be concise. \
          `brave_web_search` is only in the tool list when the user asked to search the open web (e.g. \"search the internet\", \"suche im Internet\", \"suche nach ...\") or a skill's `requires` matches this turn — otherwise prefer **`fetch`** on any `http(s)` URL you have (including from the user). \
          At most one `brave_web_search` per user message when it is available. \
-         After an allowed search, the host may auto-`fetch` several top result URLs — use those excerpts and end with **Quellen** listing every source URL.{fs_hint}{mem_hint}{weather_directive}{skills_hint}"
+         After an allowed search, the host may auto-`fetch` several top result URLs — use those excerpts and end with **Quellen** listing every source URL.{fs_hint}{code_edit_hint}{mem_hint}{weather_directive}{skills_hint}"
     )
 }
 
@@ -1041,12 +1201,26 @@ async fn run_model_turn(
     skills_slug_filter: Option<&[String]>,
 ) -> Result<TurnResult, String> {
     let plan_mode = *state.plan_mode.read().await;
+    let apply_fix_flow = message_implies_apply_repo_fix(user_message);
+    let max_steps = if apply_fix_flow {
+        MAX_STEPS_APPLY_FIX
+    } else {
+        MAX_STEPS
+    };
     let mut model = match state.preferred_ollama_model.read().await.clone() {
         Some(m) => m,
         None => ollama::active_model().await?,
     };
     let mut tokens_in: u64 = 0;
     let mut tokens_out: u64 = 0;
+
+    let registry_has_write_tool = {
+        let reg = state.mcp.read().await;
+        reg.tool_names().iter().any(|n| {
+            let short = mcp_tool_base_name(n);
+            short.eq_ignore_ascii_case("edit_file") || short.eq_ignore_ascii_case("write_file")
+        })
+    };
 
     let recent_tools = state.recent_tools_snapshot().await;
     let (has_tools, has_memory, memory_server_key) = {
@@ -1065,6 +1239,9 @@ async fn run_model_turn(
         .await
         .as_ref()
         .is_some_and(|s| !s.diary_only);
+    // CLI sessions should consistently have memory tools available when a
+    // memory provider exists, not only after explicit memory keywords.
+    let cli_session_active = state.cli_session.read().await.is_some();
 
     let allow_brave_web_search =
         skills::allow_brave_web_search_for_message(&state.store_path, user_message);
@@ -1075,7 +1252,7 @@ async fn run_model_turn(
             user_message,
             &recent_tools,
             memory_server_key.as_deref(),
-            chat_session_recording,
+            chat_session_recording || cli_session_active,
             allow_brave_web_search,
         )
     };
@@ -1136,8 +1313,10 @@ async fn run_model_turn(
     let mut tool_rounds: usize = 0;
     // URLs already fetched successfully this user message (model + host auto-fetch).
     let mut fetch_urls_success: HashSet<String> = HashSet::new();
+    let mut all_invoked_tools: Vec<String> = Vec::new();
+    let mut fix_write_nudge_sent = false;
 
-    for step in 0..MAX_STEPS {
+    for step in 0..max_steps {
         let t0 = Instant::now();
         let effective_tools = if tools_supported {
             &tool_ctx.tools_json
@@ -1146,7 +1325,8 @@ async fn run_model_turn(
         };
         let post_tool = tool_rounds > 0;
         let json_only_user_reply = !has_tools;
-        let chat_opts = chat_options_for_agent_step(post_tool, think, json_only_user_reply);
+        let chat_opts =
+            chat_options_for_agent_step(post_tool, think, json_only_user_reply, apply_fix_flow);
 
         let inject_post_tool = post_tool;
         if inject_post_tool {
@@ -1216,6 +1396,26 @@ async fn run_model_turn(
 
         if tool_calls.is_empty() {
             if !content.is_empty() {
+                if apply_fix_flow
+                    && !plan_mode
+                    && registry_has_write_tool
+                    && step + 1 < max_steps
+                    && apply_fix_turn_unfinished(&tool_results, &all_invoked_tools)
+                {
+                    if let Some(arr) = messages.as_array_mut() {
+                        arr.push(json!({
+                            "role": "system",
+                            "content": APPLY_FIX_CONTINUE_AFTER_PROSE,
+                        }));
+                    }
+                    state
+                        .emit_log(
+                            "run",
+                            "agent: apply-fix continuation (prose-only while fix incomplete)",
+                        )
+                        .await;
+                    continue;
+                }
                 let mut r = TurnResult::reply(content);
                 r.prompt_tokens = tokens_in;
                 r.eval_tokens = tokens_out;
@@ -1228,6 +1428,26 @@ async fn run_model_turn(
                 r.eval_tokens = tokens_out;
                 r.model = model.clone();
                 return Ok(r);
+            }
+            if apply_fix_flow
+                && !plan_mode
+                && registry_has_write_tool
+                && step + 1 < max_steps
+                && apply_fix_turn_unfinished(&tool_results, &all_invoked_tools)
+            {
+                if let Some(arr) = messages.as_array_mut() {
+                    arr.push(json!({
+                        "role": "system",
+                        "content": APPLY_FIX_CONTINUE_AFTER_EMPTY,
+                    }));
+                }
+                state
+                    .emit_log(
+                        "run",
+                        "agent: apply-fix continuation (silent model step after tools)",
+                    )
+                    .await;
+                continue;
             }
             break;
         }
@@ -1297,6 +1517,7 @@ async fn run_model_turn(
         }
 
         let invoked_names: Vec<String> = prepared.iter().map(|(n, _)| n.clone()).collect();
+        all_invoked_tools.extend(invoked_names.iter().cloned());
         state.note_tools_used(&invoked_names).await;
 
         let t0 = Instant::now();
@@ -1405,6 +1626,34 @@ async fn run_model_turn(
             .await;
         }
 
+        if apply_fix_flow
+            && !plan_mode
+            && registry_has_write_tool
+            && !fix_write_nudge_sent
+            && tool_rounds >= 1
+            && step + 1 < max_steps
+            && !all_invoked_tools
+                .iter()
+                .any(|n| tool_invocation_writes_files(n))
+        {
+            if let Some(arr) = messages.as_array_mut() {
+                arr.push(json!({
+                    "role": "system",
+                    "content": "FIX REQUIRED: The user asked to apply fixes (pre-commit, lint, format, etc.). \
+                     You have not called **`edit_file`** or **`write_file`** yet. Call one of them now with the \
+                     correct `/app/…` path and the actual file content or patch. Do not finish with only \
+                     **`git_diff`** / **`git_status`** / read tools — mutate files first, then **`git_diff`**."
+                }));
+            }
+            fix_write_nudge_sent = true;
+            state
+                .emit_log(
+                    "run",
+                    "agent: injected apply-fix write nudge (no write tool yet)",
+                )
+                .await;
+        }
+
         if !direct_replies.is_empty() {
             return Ok(TurnResult {
                 text: direct_replies.join("\n\n"),
@@ -1490,7 +1739,7 @@ async fn run_model_turn(
     }
 
     Err(format!(
-        "agent exceeded {MAX_STEPS} steps without finishing"
+        "agent exceeded {max_steps} steps without finishing"
     ))
 }
 
@@ -1669,5 +1918,90 @@ mod tests {
     fn list_directory_merge_matches_prefixed_server_tool_name() {
         let out = merge_filesystem_mcp_path_args("te_x.list_directory", json!({}), Some("/app/ws"));
         assert_eq!(out["path"], json!("/app/ws"));
+    }
+
+    #[test]
+    fn search_files_merge_injects_default_excludes() {
+        let out = merge_filesystem_mcp_path_args(
+            "te_pengine-file-manager.search_files",
+            json!({ "pattern": "TODO" }),
+            Some("/app/pengine"),
+        );
+        let obj = out.as_object().unwrap();
+        assert_eq!(
+            obj.get("path").and_then(|v| v.as_str()),
+            Some("/app/pengine")
+        );
+        assert_eq!(obj.get("pattern").and_then(|v| v.as_str()), Some("TODO"));
+        let ep = obj
+            .get("excludePatterns")
+            .and_then(|v| v.as_array())
+            .expect("excludePatterns");
+        assert!(ep.iter().any(|v| v.as_str() == Some("**/node_modules/**")));
+        assert!(ep.iter().any(|v| v.as_str() == Some("**/target/**")));
+    }
+
+    #[test]
+    fn search_files_merge_preserves_user_excludes() {
+        let out = merge_filesystem_mcp_path_args(
+            "search_files",
+            json!({ "path": "/app/pengine", "excludePatterns": ["**/private/**"] }),
+            Some("/app/pengine"),
+        );
+        let ep = out["excludePatterns"].as_array().unwrap();
+        assert!(ep.iter().any(|v| v.as_str() == Some("**/private/**")));
+        assert!(ep.iter().any(|v| v.as_str() == Some("**/node_modules/**")));
+    }
+
+    #[test]
+    fn message_implies_apply_repo_fix_detects_pre_commit_and_edit_phrases() {
+        assert!(message_implies_apply_repo_fix(
+            "fix pre-commit hook failure"
+        ));
+        assert!(message_implies_apply_repo_fix("run rustfmt and clippy"));
+        assert!(message_implies_apply_repo_fix(
+            "sure edit the files to fix lint"
+        ));
+        assert!(!message_implies_apply_repo_fix("what is the weather"));
+    }
+
+    #[test]
+    fn tool_invocation_writes_files_handles_qualified_names() {
+        assert!(tool_invocation_writes_files("edit_file"));
+        assert!(tool_invocation_writes_files("te_fm.edit_file"));
+        assert!(tool_invocation_writes_files("srv.write_file"));
+        assert!(!tool_invocation_writes_files("git_diff"));
+        assert!(!tool_invocation_writes_files("read_text_file"));
+    }
+
+    #[test]
+    fn tool_output_implies_unresolved_failure_detects_clippy_and_hook() {
+        assert!(tool_output_implies_unresolved_failure(
+            "error: could not compile `pengine` (lib) due to 1 previous error"
+        ));
+        assert!(tool_output_implies_unresolved_failure(
+            "error: this match could be replaced by its body itself\n   --> src/modules/cli/output.rs:274:17"
+        ));
+        assert!(tool_output_implies_unresolved_failure(
+            "husky - pre-commit script failed (code 101)"
+        ));
+        assert!(!tool_output_implies_unresolved_failure("All checks passed."));
+    }
+
+    #[test]
+    fn apply_fix_turn_unfinished_needs_write_or_last_failure() {
+        let clippy = (
+            "run_terminal_cmd".into(),
+            "error: could not compile `pengine` (lib)".into(),
+        );
+        assert!(apply_fix_turn_unfinished(std::slice::from_ref(&clippy), &[]));
+        assert!(!apply_fix_turn_unfinished(
+            &[clippy.clone(), ("edit_file".into(), "ok".into())],
+            &["edit_file".into()]
+        ));
+        assert!(apply_fix_turn_unfinished(
+            &[("edit_file".into(), "ok".into()), clippy.clone()],
+            &["edit_file".into()]
+        ));
     }
 }

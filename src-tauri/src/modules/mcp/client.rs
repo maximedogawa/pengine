@@ -12,8 +12,10 @@ const MCP_CONNECT_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Default JSON-RPC deadline for most `tools/call` traffic (stdio/http transport defaults match).
 const MCP_TOOLS_CALL_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
 
-/// Recursive tree / glob search can be slow; keep a hard cap so the agent does not sit 10+ minutes.
-const MCP_TOOLS_CALL_TIMEOUT_SEARCH: Duration = Duration::from_secs(90);
+/// Recursive glob search. Default excludes (`node_modules`, `target`, `.git`, …) are now merged by
+/// the agent (see `merge_filesystem_mcp_path_args`); this ceiling is kept generous for large repos
+/// where the filtered set is still many thousands of files.
+const MCP_TOOLS_CALL_TIMEOUT_SEARCH: Duration = Duration::from_secs(180);
 
 /// Full-repo trees are cheaper once excludes trim `node_modules` / `target` / `.git` (see agent merge),
 /// but source-heavy repos still need headroom below multi‑minute stalls.

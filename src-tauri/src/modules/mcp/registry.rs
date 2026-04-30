@@ -722,7 +722,55 @@ fn score_tool_combined(
     if tool.name.eq_ignore_ascii_case("fetch") && message_suggests_url_fetch(user_message) {
         s += 22;
     }
+    if message_suggests_code_review_refactor(user_message) {
+        let short = tool
+            .name
+            .rsplit_once('.')
+            .map(|(_, t)| t)
+            .unwrap_or(tool.name.as_str());
+        s += match short {
+            "git_status" | "git_diff" | "git_diff_unstaged" | "git_diff_staged" | "git_log" => 36,
+            "search_files"
+            | "read_text_file"
+            | "read_multiple_files"
+            | "list_directory"
+            | "list_directory_with_sizes"
+            | "directory_tree" => 30,
+            "edit_file" | "write_file" | "create_directory" | "move_file" => 26,
+            _ => 0,
+        };
+    }
     s
+}
+
+fn message_suggests_code_review_refactor(msg: &str) -> bool {
+    const HINTS: &[&str] = &[
+        "code review",
+        "review this code",
+        "review my code",
+        "refactor",
+        "cleanup",
+        "clean up",
+        "improve this code",
+        "fix this code",
+        "bugfix",
+        "tech debt",
+        "pull request",
+        "pr review",
+        "git diff",
+        "pre-commit",
+        "precommit",
+        "lint-staged",
+        "rustfmt",
+        "clippy",
+        "eslint",
+        "prettier",
+        "ci failure",
+        "fix pre-commit",
+    ];
+    HINTS
+        .iter()
+        .any(|h| crate::modules::skills::service::user_message_needle_match(msg, h))
 }
 
 /// Weight recent invocations: newest names in the deque score highest.
@@ -1208,6 +1256,58 @@ mod tests {
                 assert!(sel.iter().any(|t| t.name == "fetch"));
                 assert!(sel.iter().any(|t| t.name == "time"));
                 assert_eq!(sel.iter().filter(|t| t.server_name == "memsrv").count(), 4);
+            }
+            super::ToolRoutePlan::FullCatalog => panic!("expected ranked subset"),
+        }
+    }
+
+    #[test]
+    fn routing_code_review_refactor_prefers_git_and_edit_stack() {
+        let mut tools: Vec<ToolDef> = (0..20)
+            .map(|i| ToolDef {
+                server_name: "misc".into(),
+                name: format!("misc_tool_{i}"),
+                description: Some("unrelated helper".into()),
+                input_schema: json!({}),
+                direct_return: false,
+                category: None,
+                risk: ToolRisk::Low,
+            })
+            .collect();
+        for name in [
+            "git_status",
+            "git_diff",
+            "git_log",
+            "search_files",
+            "read_text_file",
+            "edit_file",
+            "write_file",
+            "fetch",
+            "time",
+        ] {
+            tools.push(ToolDef {
+                server_name: "core".into(),
+                name: name.into(),
+                description: Some("code operations".into()),
+                input_schema: json!({}),
+                direct_return: false,
+                category: None,
+                risk: ToolRisk::Low,
+            });
+        }
+        let plan = super::route_tools(
+            &tools,
+            "please do a code review and refactor this module",
+            &[],
+            None,
+            false,
+        );
+        match plan {
+            super::ToolRoutePlan::Subset { tools: sel, .. } => {
+                assert!(sel.iter().any(|t| t.name == "git_diff"), "{sel:?}");
+                assert!(sel.iter().any(|t| t.name == "search_files"), "{sel:?}");
+                assert!(sel.iter().any(|t| t.name == "read_text_file"), "{sel:?}");
+                assert!(sel.iter().any(|t| t.name == "edit_file"), "{sel:?}");
             }
             super::ToolRoutePlan::FullCatalog => panic!("expected ranked subset"),
         }

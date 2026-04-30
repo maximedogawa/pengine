@@ -74,14 +74,6 @@ async fn dispatch_native(
         }
         "version" => handlers::version(),
         "status" => handlers::status(state).await,
-        "doctor" => handlers::doctor(state).await,
-        "plan" => {
-            let action = rest.split_whitespace().next();
-            handlers::plan(state, action).await
-        }
-        "cost" => handlers::cost(state).await,
-        "resume" => handlers::resume(state).await,
-        "compact" => handlers::compact(state).await,
         "clear" => handlers::clear(),
         "config" => {
             let kvs: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
@@ -108,10 +100,6 @@ async fn dispatch_native(
             let trimmed = rest.trim();
             let search = (!trimmed.is_empty()).then_some(trimmed);
             handlers::tools(state, search).await
-        }
-        "mcp" => {
-            let (action, tail) = split_first(rest);
-            super::mcp_cmd::run_from_args(state, action, tail).await
         }
         "skills" => {
             let (action, tail) = split_first(rest);

@@ -1,15 +1,3 @@
-//! First-run "trust this folder" prompt for REPL launch.
-//!
-//! When `pengine` starts an interactive REPL inside a directory that is not
-//! already covered by an MCP filesystem root, prompt the user to add it. The
-//! decision is persisted to `$STORE/folder_trust.json` so we don't re-ask on
-//! every launch.
-//!
-//! Skipped when:
-//! - stdin is not a TTY (one-shot, scripted, or piped runs),
-//! - the cwd is already under a trusted entry or an MCP fs root,
-//! - the cwd is already on the deny list.
-
 use crate::modules::mcp::service as mcp_service;
 use crate::shared::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -28,14 +16,10 @@ pub struct FolderTrust {
 }
 
 impl FolderTrust {
-    /// True when the path is in `trusted` or `denied` (exact match — used to
-    /// avoid re-prompting after an explicit user decision).
     pub fn is_decided(&self, path: &Path) -> bool {
         self.trusted.iter().any(|p| p == path) || self.denied.iter().any(|p| p == path)
     }
 
-    /// True when the path lives under any previously-trusted entry. Lets a
-    /// single "yes" cover the whole subtree.
     pub fn is_under_trusted(&self, path: &Path) -> bool {
         self.trusted.iter().any(|t| path.starts_with(t))
     }
@@ -67,8 +51,6 @@ pub fn save(store_path: &Path, trust: &FolderTrust) -> Result<(), String> {
 pub enum PromptDecision {
     Yes,
     No,
-    /// User skipped (empty input, ambiguous answer, or non-TTY). The decision
-    /// is *not* persisted, so the next launch re-asks.
     Skip,
 }
 
@@ -81,8 +63,6 @@ pub enum PromptOutcome {
     NotPrompted,
 }
 
-/// Default prompt + answer reader. Writes the prompt to stdout so it is
-/// visible in interactive terminals, then reads one line from stdin.
 fn ask(prompt: &str) -> PromptDecision {
     if !std::io::stdin().is_terminal() {
         return PromptDecision::Skip;
@@ -107,8 +87,6 @@ fn parse_answer(line: &str) -> PromptDecision {
     }
 }
 
-/// Run the prompt for `cwd`. Returns the outcome so the caller can render a
-/// confirmation line in the same style as the rest of the REPL boot output.
 pub async fn maybe_prompt_for_cwd(state: &AppState, cwd: &Path) -> Result<PromptOutcome, String> {
     let cwd = match fs::canonicalize(cwd) {
         Ok(p) => p,

@@ -1,12 +1,4 @@
-//! PR 1 handlers — one function per native command.
-//!
-//! Rules:
-//! - Each handler returns a [`CliReply`]; sinks render it.
-//! - Handlers reuse existing module services (bot, mcp, ollama, skills,
-//!   user_settings). No duplicated business logic.
-
 use super::commands::{self, NativeCommand};
-use super::doctor;
 use super::flavor;
 use super::mentions;
 use super::output::{fmt_elapsed, CliReply, Progress, ProgressStatus};
@@ -17,14 +9,13 @@ use crate::infrastructure::bot_lifecycle;
 use crate::modules::agent;
 use crate::modules::bot::{repository as bot_repo, token_verify};
 use crate::modules::mcp::service as mcp_service;
-use crate::modules::ollama::service::{self as ollama, ChatOptions, ModelInfo, ModelKind};
+use crate::modules::ollama::service::{self as ollama, ModelInfo};
 use crate::modules::secure_store;
 use crate::modules::skills::service as skills_service;
 use crate::shared::state::{AppState, ConnectionData, ConnectionMetadata, LogEntry};
 use crate::shared::user_settings;
 use chrono::Utc;
 use serde::Deserialize;
-use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
@@ -55,9 +46,7 @@ pub fn help(topic: Option<&str>) -> CliReply {
          -p, --print <prompt>         Non-interactive: run agent on <prompt> and exit\n  \
          --output-format <fmt>        With -p: text (default), json, stream-json\n  \
          --continue                   Resume the most recent saved REPL session\n  \
-         -V, --version                Print version and exit\n  \
-         --no-terminal                Reserved for future sink routing\n  \
-         --no-telegram                Reserved for future sink routing\n\n\
+         -V, --version                Print version and exit\n\n\
          Run `pengine help <command>` (or `/help <command>` in the REPL) for command-specific usage.",
     );
     CliReply::text(out.trim_end())
@@ -80,198 +69,8 @@ fn help_for_topic(topic: &str) -> CliReply {
     }
 }
 
-/// `/clear` outside a REPL is a no-op error. The REPL itself intercepts the
-/// command before dispatch, so this handler only fires from the Telegram
-/// bridge or one-shot execution.
 pub fn clear() -> CliReply {
     CliReply::error("clear: only available inside the interactive REPL")
-}
-
-pub async fn doctor(state: &AppState) -> CliReply {
-    let checks = doctor::run(state).await;
-    let any_fail = checks
-        .iter()
-        .any(|c| matches!(c.status, doctor::Status::Fail));
-    let body = doctor::format_report(&checks);
-    if any_fail {
-        CliReply::error(format!("pengine doctor — issues found:\n\n{body}"))
-    } else {
-        CliReply::code("bash", format!("pengine doctor — all good\n\n{body}"))
-    }
-}
-
-/// `/plan [on|off|toggle]` — toggles plan mode on the AppState.
-pub async fn plan(state: &AppState, action: Option<&str>) -> CliReply {
-    let action = action.map(str::trim).unwrap_or("toggle");
-    let mut guard = state.plan_mode.write().await;
-    let new_value = match action {
-        "on" | "enable" | "true" | "1" => true,
-        "off" | "disable" | "false" | "0" => false,
-        "toggle" | "" => !*guard,
-        other => {
-            return CliReply::error(format!(
-                "plan: unknown action `{other}` (use on | off | toggle)"
-            ))
-        }
-    };
-    *guard = new_value;
-    if new_value {
-        CliReply::code(
-            "bash",
-            "plan mode: ON\n  · agent will produce a markdown plan\n  · write tools (memory writes, fs writes, edits) are stripped from the catalog",
-        )
-    } else {
-        CliReply::code("bash", "plan mode: OFF")
-    }
-}
-
-/// `/cost` — show token usage + rough cost estimate for the current session.
-pub async fn cost(state: &AppState) -> CliReply {
-    let session = state.cli_session.read().await.clone();
-    let Some(s) = session else {
-        return CliReply::code(
-            "bash",
-            "no active session — token totals available after the first /ask",
-        );
-    };
-    let model = state
-        .preferred_ollama_model
-        .read()
-        .await
-        .clone()
-        .unwrap_or_else(|| "<unset>".to_string());
-    let kind = ollama::classify_model(&model);
-    let cost_line = match kind {
-        ModelKind::Local => "  est_cost:  $0.00 (local model)".to_string(),
-        ModelKind::Cloud => {
-            // Conservative blended estimate: $1 / 1M prompt + $3 / 1M completion.
-            // Pengine doesn't have per-model pricing; this is an upper-bound hint.
-            let in_cost = (s.prompt_tokens_total as f64) * 1.0e-6;
-            let out_cost = (s.eval_tokens_total as f64) * 3.0e-6;
-            format!(
-                "  est_cost:  ~${:.4} (cloud, rough $1/$3 per M in/out)",
-                in_cost + out_cost
-            )
-        }
-    };
-    let body = format!(
-        "session:    {}\n  turns:      {}\n  tokens_in:  {}\n  tokens_out: {}\n  model:      {}\n{}",
-        s.id,
-        s.turns.len(),
-        s.prompt_tokens_total,
-        s.eval_tokens_total,
-        model,
-        cost_line
-    );
-    CliReply::code("bash", body)
-}
-
-/// `/resume` — load the most recent saved session into AppState.
-pub async fn resume(state: &AppState) -> CliReply {
-    match session::load_last(&state.store_path) {
-        Ok(Some(s)) => {
-            let summary_line = if s.summary.is_some() {
-                "  summary:    present (set by /compact)\n"
-            } else {
-                ""
-            };
-            let body = format!(
-                "resumed session: {}\n  started:    {}\n  turns:      {}\n{}  tokens_in:  {}\n  tokens_out: {}",
-                s.id, s.started_at, s.turns.len(), summary_line, s.prompt_tokens_total, s.eval_tokens_total
-            );
-            *state.cli_session.write().await = Some(s);
-            CliReply::code("bash", body)
-        }
-        Ok(None) => CliReply::code("bash", "no saved session to resume"),
-        Err(e) => CliReply::error(format!("resume: {e}")),
-    }
-}
-
-/// `/compact` — summarize the current session and reset turns. The summary is
-/// kept on the session and prefixed to future user messages.
-pub async fn compact(state: &AppState) -> CliReply {
-    let snapshot = state.cli_session.read().await.clone();
-    let Some(mut s) = snapshot else {
-        return CliReply::code("bash", "no active session to compact");
-    };
-    if s.turns.is_empty() && s.summary.is_none() {
-        return CliReply::code("bash", "session has no turns yet — nothing to compact");
-    }
-
-    let mut transcript = String::new();
-    if let Some(prev) = s.summary.as_deref() {
-        transcript.push_str("Prior summary:\n");
-        transcript.push_str(prev);
-        transcript.push_str("\n\n");
-    }
-    for t in &s.turns {
-        transcript.push_str(&format!(
-            "[user] {}\n[assistant] {}\n",
-            t.user.trim(),
-            t.assistant.trim()
-        ));
-    }
-
-    let mut model = state
-        .preferred_ollama_model
-        .read()
-        .await
-        .clone()
-        .unwrap_or_else(String::new);
-    if model.is_empty() {
-        model = match ollama::active_model().await {
-            Ok(m) => m,
-            Err(e) => return CliReply::error(format!("compact: ollama: {e}")),
-        };
-    }
-
-    let messages = json!([
-        {
-            "role": "system",
-            "content": "You compress a chat transcript. Output a tight markdown summary covering: (1) topics, (2) decisions, (3) outstanding tasks. Max 250 words. No chain-of-thought."
-        },
-        {
-            "role": "user",
-            "content": format!("Compress this transcript:\n\n{transcript}")
-        }
-    ]);
-    let opts = ChatOptions {
-        think: Some(false),
-        num_predict: Some(512),
-        temperature: Some(0.3),
-        ..ChatOptions::default()
-    };
-    let result = match ollama::chat_with_tools(&model, &messages, &json!([]), &opts).await {
-        Ok(r) => r,
-        Err(e) => return CliReply::error(format!("compact: model: {e}")),
-    };
-    let summary_text = result
-        .message
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if summary_text.is_empty() {
-        return CliReply::error("compact: model returned empty summary");
-    }
-
-    let prior_turn_count = s.turns.len();
-    let summary_chars = summary_text.chars().count();
-    s.summary = Some(summary_text);
-    s.turns.clear();
-    if let Err(e) = session::save(&state.store_path, &s) {
-        return CliReply::error(format!("compact: save: {e}"));
-    }
-    let id = s.id.clone();
-    *state.cli_session.write().await = Some(s);
-
-    CliReply::code(
-        "bash",
-        format!(
-            "compacted: {prior_turn_count} turn(s) → summary ({summary_chars} chars), session `{id}` saved"
-        ),
-    )
 }
 
 pub fn version() -> CliReply {
@@ -303,11 +102,24 @@ pub async fn status(state: &AppState) -> CliReply {
 
     let mcp_tools = state.mcp.read().await.tool_names().len();
     let skills_cap = *state.skills_hint_max_bytes.read().await;
+    let session_line = {
+        let snap = state.cli_session.read().await.clone();
+        match snap {
+            Some(s) => format!(
+                "session:   turns={}  tokens_in={}  tokens_out={}",
+                s.turns.len(),
+                s.prompt_tokens_total,
+                s.eval_tokens_total
+            ),
+            None => "session:   no active CLI session".to_string(),
+        }
+    };
 
     let body = format!(
         "{bot_line}\n\
          ollama:    active={active}  preferred={preferred}\n\
          mcp:       {mcp_tools} tool(s) connected\n\
+         {session_line}\n\
          settings:  skills_hint_max_bytes={skills_cap}\n\
          store:     {}",
         state.store_path.display(),
@@ -470,9 +282,6 @@ pub async fn model(state: &AppState, name: Option<&str>, clear: bool) -> CliRepl
     reply
 }
 
-/// `bot connect <token>` — verify, persist, save keychain. Does NOT spawn the
-/// bot (the CLI one-shot process would exit). The running desktop app or a
-/// REPL session picks up the stored metadata + keychain token.
 pub async fn bot_connect(state: &AppState, token: &str) -> CliReply {
     let token = token.trim();
     if token.is_empty() {
@@ -530,8 +339,6 @@ pub async fn bot_disconnect(state: &AppState) -> CliReply {
     CliReply::code("bash", "disconnected and cleared store")
 }
 
-/// `tools [search]` — list MCP tools from the live registry.
-/// The registry is assumed warmed by the caller (bootstrap / REPL startup).
 pub async fn tools(state: &AppState, search: Option<&str>) -> CliReply {
     let reg = state.mcp.read().await;
     let mut rows: Vec<(String, String, String)> = reg
@@ -674,11 +481,6 @@ pub async fn fs(state: &AppState, action: Option<&str>, path: Option<&str>) -> C
     }
 }
 
-/// `logs` — three modes:
-/// - `--follow` (live) subscribes to the in-memory broadcast and prints each event.
-/// - `--tail N` reads the newest N lines from the audit NDJSON files on disk,
-///   walking back day-by-day until N is reached or no older file remains.
-/// - default (no flag) tails the last 50 lines — the common "what just happened" case.
 pub async fn logs(state: &AppState, tail: Option<usize>, follow: bool) -> CliReply {
     if follow {
         return follow_logs_from_broadcast(state).await;
@@ -774,6 +576,14 @@ pub async fn ask_in_session(state: &AppState, text: &str, persist_session: bool)
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if persist_session {
+        let mut guard = state.cli_session.write().await;
+        if guard.is_none() {
+            *guard = Some(CliSession::fresh_with_project(
+                session::detect_project_context(&cwd),
+            ));
+        }
+    }
     let allowed_roots: Vec<PathBuf> = state
         .cached_filesystem_paths
         .read()
@@ -816,7 +626,12 @@ pub async fn ask_in_session(state: &AppState, text: &str, persist_session: bool)
             }
             if persist_session {
                 let mut guard = state.cli_session.write().await;
-                let session = guard.get_or_insert_with(CliSession::fresh);
+                let session = guard.get_or_insert_with(|| {
+                    CliSession::fresh_with_project(session::detect_project_context(&cwd))
+                });
+                if session.project.is_none() {
+                    session.project = Some(session::detect_project_context(&cwd));
+                }
                 session.record_turn(
                     &expanded.message,
                     &turn.text,

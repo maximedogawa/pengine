@@ -1,6 +1,3 @@
-//! Silly / cozy copy for the interactive CLI — rotating lines so long sessions
-//! feel less like a log dump and more like a pair-programming sidecar.
-
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn tick() -> u128 {
