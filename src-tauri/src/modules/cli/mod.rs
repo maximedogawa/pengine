@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod commands;
 pub mod dispatch;
 pub mod doctor;
+pub mod flavor;
 pub mod folder_trust;
 pub mod handlers;
 pub mod mcp_cmd;

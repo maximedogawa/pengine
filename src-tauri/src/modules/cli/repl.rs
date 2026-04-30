@@ -6,6 +6,7 @@
 
 use super::banner::CLI_WELCOME;
 use super::dispatch::{dispatch_line, format_repl_line_for_audit, DispatchContext};
+use super::flavor;
 use super::folder_trust::{self, PromptOutcome};
 use super::output::{render_reply, CliReply, OutputSink, RenderStyle, TerminalSink};
 use crate::modules::mcp::service as mcp_service;
@@ -41,6 +42,16 @@ store:     {}",
         CLI_WELCOME.trim_start_matches('\n'),
         state.store_path.display()
     )));
+    if std::io::stdout().is_terminal() {
+        sink.render(&CliReply::text(format!(
+            "\n\x1b[2m{}\x1b[0m",
+            flavor::repl_tagline()
+        )));
+        sink.render(&CliReply::text(
+            "\n\x1b[2m  Commands:\x1b[0m  /help  ·  /status  ·  /tools  ·  /model  ·  /clear  ·  /exit\n\
+\x1b[2m  Tip:\x1b[0m type freely to talk to the agent — slash commands skip the model.\n",
+        ));
+    }
 
     // First-run trust prompt: when starting in a folder not yet decided, ask
     // whether to add the cwd as an MCP filesystem root. Skipped when stdin is

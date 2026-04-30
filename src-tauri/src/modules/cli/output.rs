@@ -117,9 +117,15 @@ impl OutputSink for TerminalSink {
             ReplyKind::Text => println!("{}", reply.body),
             ReplyKind::Error => {
                 if self.color {
-                    eprintln!("\x1b[31m{}\x1b[0m", reply.body);
+                    eprintln!();
+                    eprintln!(
+                        "  \x1b[1m\x1b[38;5;203m⚠\x1b[0m \x1b[1m\x1b[38;5;203mSomething went wrong\x1b[0m"
+                    );
+                    for line in reply.body.lines() {
+                        eprintln!("\x1b[38;5;203m  {}\x1b[0m", line);
+                    }
                 } else {
-                    eprintln!("{}", reply.body);
+                    eprintln!("Error: {}", reply.body);
                 }
             }
             ReplyKind::CodeBlock { lang } => {
@@ -207,12 +213,62 @@ const REPL_FIRST_PREFIX: &str = "  \x1b[2m⎿\x1b[0m  ";
 const REPL_FIRST_PREFIX_PLAIN: &str = "  ⎿  ";
 const REPL_CONT_PREFIX: &str = "     ";
 
+/// Width of dim rules framing each REPL reply (app-like section separators).
+const REPL_REPLY_RULE_WIDTH: usize = 52;
+
+fn repl_reply_rule_bar(left: char, mid: char, right: char) {
+    let dash = REPL_REPLY_RULE_WIDTH.saturating_sub(2);
+    let mid_str: String = std::iter::repeat_n(mid, dash).collect();
+    println!("  \x1b[38;5;242m{}{}{}\x1b[0m", left, mid_str, right);
+}
+
+/// Soft panel header/footer so replies feel scoped like an in-app card (TTY only).
+fn repl_reply_section_open() {
+    if !is_terminal_stdout() {
+        return;
+    }
+    println!();
+    repl_reply_rule_bar('╭', '─', '╮');
+}
+
+fn repl_reply_section_close() {
+    if !is_terminal_stdout() {
+        return;
+    }
+    repl_reply_rule_bar('╰', '─', '╯');
+    println!();
+}
+
+/// Short slash-command replies (single short line, no fences) stay compact — no card chrome.
+pub(crate) fn repl_reply_use_section_chrome(reply: &CliReply) -> bool {
+    match &reply.kind {
+        ReplyKind::Text => {
+            let t = reply.body.trim();
+            if t.contains("```") || t.contains('\n') {
+                return true;
+            }
+            t.chars().count() >= 72
+        }
+        _ => true,
+    }
+}
+
 /// Central rendering helper. Handles diff-fence splitting for `Text` replies
 /// in REPL mode so ` ```diff ``` ` blocks get coloured inline.
 pub fn render_reply(sink: &dyn OutputSink, reply: &CliReply, style: RenderStyle) {
     match style {
         RenderStyle::Plain => sink.render(reply),
-        RenderStyle::ReplIndent => render_reply_indented(sink, reply),
+        RenderStyle::ReplIndent => {
+            if repl_reply_use_section_chrome(reply) {
+                repl_reply_section_open();
+                render_reply_indented(sink, reply);
+                repl_reply_section_close();
+            } else {
+                println!();
+                render_reply_indented(sink, reply);
+                println!();
+            }
+        }
     }
 }
 
@@ -608,5 +664,31 @@ mod tests {
         assert!(fmt_elapsed(Duration::from_secs(4)).ends_with('s'));
         assert_eq!(fmt_elapsed(Duration::from_secs(65)), "1m 5s");
         assert_eq!(fmt_elapsed(Duration::from_secs(288)), "4m 48s");
+    }
+
+    #[test]
+    fn repl_chrome_skips_short_single_line() {
+        assert!(!repl_reply_use_section_chrome(&CliReply::text("ready")));
+        assert!(!repl_reply_use_section_chrome(&CliReply::text(
+            "short slash reply"
+        )));
+    }
+
+    #[test]
+    fn repl_chrome_frames_long_or_multiline() {
+        assert!(repl_reply_use_section_chrome(&CliReply::text("two\nlines")));
+        let long = "x".repeat(90);
+        assert!(repl_reply_use_section_chrome(&CliReply::text(long)));
+        assert!(repl_reply_use_section_chrome(&CliReply::text(
+            "```\nok\n```"
+        )));
+    }
+
+    #[test]
+    fn repl_chrome_always_on_code_and_diff() {
+        assert!(repl_reply_use_section_chrome(&CliReply::code(
+            "bash", "echo hi"
+        )));
+        assert!(repl_reply_use_section_chrome(&CliReply::diff("+x")));
     }
 }

@@ -7,6 +7,7 @@
 
 use super::commands::{self, NativeCommand};
 use super::doctor;
+use super::flavor;
 use super::mentions;
 use super::output::{fmt_elapsed, CliReply, Progress, ProgressStatus};
 use super::session::{self, CliSession};
@@ -798,7 +799,7 @@ pub async fn ask_in_session(state: &AppState, text: &str, persist_session: bool)
         format!("{context_prefix}## New user message\n{}", expanded.message)
     };
 
-    let progress = Progress::start("Thinking");
+    let progress = Progress::start(flavor::thinking_label().to_string());
     let forwarder = spawn_status_forwarder(state, progress.status_sender()).await;
     let result = agent::run_turn(state, &prompt_for_agent).await;
     if let Some(h) = forwarder {
@@ -876,7 +877,7 @@ async fn spawn_status_forwarder(
 /// Plain-language label for an MCP tool id (snake_case), for CLI spinner / interjects.
 fn friendly_tool_action(name: &str) -> String {
     match name {
-        "directory_tree" => "Scanning folder layout".into(),
+        "directory_tree" => flavor::fun_pair("Scanning folder layout", "Mapping the file jungle"),
         "list_directory" | "list_directory_with_sizes" => "Listing folder contents".into(),
         "search_files" => "Searching files".into(),
         "read_text_file" | "read_multiple_files" | "read_media_file" => "Reading files".into(),
@@ -891,6 +892,8 @@ fn friendly_tool_action(name: &str) -> String {
         "git_commit" => "Creating git commit".into(),
         "time" => "Getting time".into(),
         "roll_dice" => "Rolling dice".into(),
+        "shell_execute" => flavor::fun_pair("Running a shell command", "Poking the subprocess"),
+        "run_terminal_cmd" => flavor::fun_pair("Running a terminal command", "Borrowing the shell"),
         _ => name
             .split('_')
             .filter(|s| !s.is_empty())
@@ -919,11 +922,7 @@ fn humanize_tool_status_line(message: &str) -> Option<String> {
 
     if let Some(prefix) = msg.strip_suffix(" tool call(s)") {
         if let Ok(n) = prefix.trim().parse::<usize>() {
-            let s = match n {
-                0 => "Preparing tools…".to_string(),
-                1 => "Running one tool…".to_string(),
-                _ => format!("Running {n} tools…"),
-            };
+            let s = flavor::tool_batch_label(n);
             return Some(truncate_chars(&s, MAX));
         }
     }
@@ -1050,8 +1049,8 @@ fn emit_baked_line(elapsed: std::time::Duration) {
         return;
     }
     let line = format!(
-        "  \x1b[2m⎿\x1b[0m  \x1b[2mBaked for {}\x1b[0m\n",
-        fmt_elapsed(elapsed)
+        "  \x1b[2m⎿\x1b[0m  \x1b[2m{}\x1b[0m\n",
+        flavor::baked_message(elapsed, fmt_elapsed)
     );
     let mut err = std::io::stderr().lock();
     let _ = err.write_all(line.as_bytes());

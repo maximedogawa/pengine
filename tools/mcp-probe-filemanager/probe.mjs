@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/// <reference types="node" />
 /**
  * Smoke-test @modelcontextprotocol/server-filesystem (same package as Pengine File Manager).
  *
