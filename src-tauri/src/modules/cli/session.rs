@@ -20,6 +20,9 @@ const BY_PATH_POINTER: &str = "cli_session_by_path.json";
 const HISTORY_TURN_BUDGET: usize = 6;
 const HISTORY_BYTES_BUDGET: usize = 12_000;
 
+/// Max bytes read from the hidden project file `.pengine` (file only, not a directory).
+const DOT_PENGINE_MAX_BYTES: usize = 32_768;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTurn {
     pub at: DateTime<Utc>,
@@ -277,6 +280,74 @@ pub fn detect_project_context(cwd: &Path) -> ProjectContext {
     }
 }
 
+/// Directories to scan for a **file** named `.pengine`: **repo root first**
+/// (when inside a git worktree), then cwd and parents toward that root so a
+/// deeper `.pengine` file can override when present.
+fn dot_pengine_scan_dirs(ctx: &ProjectContext) -> Vec<PathBuf> {
+    let mut chain: Vec<PathBuf> = Vec::new();
+    let mut p = ctx.cwd.clone();
+    loop {
+        chain.push(p.clone());
+        if ctx.git_root.as_ref() == Some(&p) {
+            break;
+        }
+        if !p.pop() {
+            break;
+        }
+    }
+    chain.reverse();
+    if let Some(gr) = ctx.git_root.clone() {
+        if !chain.iter().any(|d| d == &gr) {
+            chain.insert(0, gr);
+        }
+    }
+    chain
+}
+
+fn read_limited_utf8(path: &Path) -> Option<String> {
+    let raw = fs::read(path).ok()?;
+    let slice = if raw.len() > DOT_PENGINE_MAX_BYTES {
+        &raw[..DOT_PENGINE_MAX_BYTES]
+    } else {
+        raw.as_slice()
+    };
+    let mut s = String::from_utf8_lossy(slice).into_owned();
+    if raw.len() > DOT_PENGINE_MAX_BYTES {
+        s.push_str("\n…[truncated]\n");
+    }
+    Some(s)
+}
+
+fn read_dot_pengine_file_at(dir: &Path) -> Option<String> {
+    let dot = dir.join(".pengine");
+    let meta = fs::metadata(&dot).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    read_limited_utf8(&dot)
+}
+
+/// Load optional project metadata from the hidden file `.pengine` only (not a folder).
+pub fn read_dot_pengine_context(ctx: &ProjectContext) -> Option<String> {
+    for dir in dot_pengine_scan_dirs(ctx) {
+        if let Some(body) = read_dot_pengine_file_at(&dir) {
+            let trimmed = body.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Markdown block prepended **before** session history so the agent sees stable
+/// project context first.
+pub fn dot_pengine_prompt_block(ctx: &ProjectContext) -> String {
+    read_dot_pengine_context(ctx).map_or_else(String::new, |body| {
+        format!("## Project context (.pengine)\n{body}\n\n")
+    })
+}
+
 fn detect_git(start: &Path) -> (Option<PathBuf>, Option<String>) {
     let mut here = start.to_path_buf();
     loop {
@@ -428,5 +499,52 @@ mod tests {
         let ctx = detect_project_context(&outside);
         assert!(ctx.git_root.is_none());
         assert!(ctx.git_branch.is_none());
+    }
+
+    #[test]
+    fn read_dot_pengine_reads_file_at_git_root() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let dot_git = repo.join(".git");
+        fs::create_dir_all(&dot_git).unwrap();
+        fs::write(dot_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(repo.join(".pengine"), "Use bun for scripts.\n").unwrap();
+        let sub = repo.join("pkg");
+        fs::create_dir_all(&sub).unwrap();
+
+        let ctx = detect_project_context(&sub);
+        let body = read_dot_pengine_context(&ctx).expect(".pengine body");
+        assert!(body.contains("bun"));
+    }
+
+    #[test]
+    fn read_dot_pengine_ignores_dot_pengine_directory() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("proj");
+        fs::create_dir_all(root.join(".pengine")).unwrap();
+        fs::write(root.join(".pengine/README.md"), "only in folder\n").unwrap();
+
+        let ctx = ProjectContext {
+            cwd: root,
+            git_root: None,
+            git_branch: None,
+        };
+        assert!(read_dot_pengine_context(&ctx).is_none());
+    }
+
+    #[test]
+    fn dot_pengine_prompt_block_wraps_section() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("r");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".pengine"), "x").unwrap();
+        let ctx = ProjectContext {
+            cwd: root,
+            git_root: None,
+            git_branch: None,
+        };
+        let b = dot_pengine_prompt_block(&ctx);
+        assert!(b.starts_with("## Project context (.pengine)"));
+        assert!(b.contains("x"));
     }
 }

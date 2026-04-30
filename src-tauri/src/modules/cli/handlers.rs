@@ -596,17 +596,36 @@ pub async fn ask_in_session(state: &AppState, text: &str, persist_session: bool)
         state.emit_log("cli", &format!("mention: {err}")).await;
     }
 
-    let context_prefix = if persist_session {
+    let (context_prefix, project_for_dot) = if persist_session {
         let snap = state.cli_session.read().await.clone();
-        snap.map(|s| s.context_prefix()).unwrap_or_default()
+        let pfx = snap
+            .as_ref()
+            .map(|s| s.context_prefix())
+            .unwrap_or_default();
+        let proj = snap
+            .as_ref()
+            .and_then(|s| s.project.clone())
+            .unwrap_or_else(|| session::detect_project_context(&cwd));
+        (pfx, proj)
     } else {
-        String::new()
+        (String::new(), session::detect_project_context(&cwd))
     };
 
-    let prompt_for_agent = if context_prefix.is_empty() {
-        expanded.message.clone()
-    } else {
-        format!("{context_prefix}## New user message\n{}", expanded.message)
+    let dot_prefix = session::dot_pengine_prompt_block(&project_for_dot);
+
+    let prompt_for_agent = {
+        let mut head = String::new();
+        if !dot_prefix.is_empty() {
+            head.push_str(&dot_prefix);
+        }
+        if !context_prefix.is_empty() {
+            head.push_str(&context_prefix);
+        }
+        if head.is_empty() {
+            expanded.message.clone()
+        } else {
+            format!("{head}## New user message\n{}", expanded.message)
+        }
     };
 
     let progress = Progress::start(flavor::thinking_label().to_string());

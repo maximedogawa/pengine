@@ -61,12 +61,12 @@ const SUMMARY_SYSTEM_PROMPT: &str = "You synthesize tool results for the user. R
 5) Keep the body concise but do not drop **Quellen** to save space.\n\
 6) No chain-of-thought, planning, or English meta: write only text that should appear in the user's chat bubble.";
 
-const APPLY_FIX_CONTINUE_AFTER_PROSE: &str = "CONTINUE (apply-fix): This turn is **not** finished. Either you have not called **`edit_file`** / **`write_file`** yet, or the **latest** tool output still shows a compile/clippy/lint/pre-commit failure. \
-Your next step must be **tool calls** that patch the repo (use absolute **`/app/...`** paths), then re-check with **`git_diff`** or the same command if needed. \
-Do not reply with meta-commentary about output formats, schemas, or \"no task\" — fix the files the log points at (e.g. clippy `file.rs:line`).";
+const REPO_WRITE_CONTINUE_AFTER_PROSE: &str = "CONTINUE (repo files): This turn is **not** finished. Either you have not called **`edit_file`** / **`write_file`** / **`create_directory`** yet, or the **latest** tool output still shows a compile/clippy/lint/pre-commit failure. \
+Your next step must be **tool calls** on the repo (absolute **`/app/...`** paths): create missing files/folders the user asked for, or patch what the log cites — then verify if appropriate. \
+Do not reply with meta-commentary about output formats or a generic \"ready to assist\" offer.";
 
-const APPLY_FIX_CONTINUE_AFTER_EMPTY: &str = "CONTINUE (apply-fix): You returned no assistant text and no tool calls after tool results. \
-Use **`edit_file`** / **`write_file`** to fix the failures shown in the latest tool output, then verify.";
+const REPO_WRITE_CONTINUE_AFTER_EMPTY: &str = "CONTINUE (repo files): You returned no assistant text and no tool calls after tool results. \
+Use **`edit_file`** / **`write_file`** / **`create_directory`** as needed for the user's request or the errors in the latest tool output.";
 
 /// When the MCP catalog is empty and the user did not enable `/think`, constrain the model to JSON
 /// `{\"reply\":...}` so the host can take a single user-visible field (same schema as the summarize pass).
@@ -74,7 +74,7 @@ fn chat_options_for_agent_step(
     post_tool: bool,
     user_wants_think: bool,
     json_only_user_reply: bool,
-    apply_fix_flow: bool,
+    repo_write_followthrough: bool,
 ) -> ChatOptions {
     let format = (json_only_user_reply && !user_wants_think)
         .then_some(ollama::summarize_reply_json_schema());
@@ -87,7 +87,7 @@ fn chat_options_for_agent_step(
             ..ChatOptions::default()
         }
     } else {
-        let cap = if apply_fix_flow {
+        let cap = if repo_write_followthrough {
             POST_TOOL_NUM_PREDICT_APPLY_FIX
         } else {
             POST_TOOL_NUM_PREDICT
@@ -544,6 +544,12 @@ fn message_implies_apply_repo_fix(msg: &str) -> bool {
     HINTS
         .iter()
         .any(|h| skills::user_message_needle_match(msg, h))
+}
+
+/// Lint/fix flows plus explicit create/write/scaffold requests (`.pengine`, new files, etc.).
+fn user_expects_repo_write_followthrough(msg: &str) -> bool {
+    message_implies_apply_repo_fix(msg)
+        || crate::modules::mcp::registry::message_suggests_filesystem_mutation(msg)
 }
 
 fn tool_invocation_writes_files(model_tool_name: &str) -> bool {
@@ -1180,12 +1186,29 @@ async fn build_system_prompt(
             .await;
     }
 
+    let scaffold_hint = {
+        let has_edit = {
+            let reg = state.mcp.read().await;
+            reg.tool_names().iter().any(|n| {
+                let short = n.rsplit_once('.').map(|(_, t)| t).unwrap_or(n.as_str());
+                short.eq_ignore_ascii_case("edit_file") || short.eq_ignore_ascii_case("write_file")
+            })
+        };
+        if has_edit
+            && crate::modules::mcp::registry::message_suggests_filesystem_mutation(user_message)
+        {
+            "\n**On-disk project metadata:** When the user asks for a **new file**, **folder**, or dot-directory (e.g. **`.pengine`**) for session or project context, **create it in this turn** with **`create_directory`** / **`write_file`** / **`edit_file`** under an absolute **`/app/…`** path. Do not answer with only a generic offer to help before those paths exist."
+        } else {
+            ""
+        }
+    };
+
     format!(
         "{PENGINE_OUTPUT_CONTRACT_LEAD}Assistant with tools. Use tools to fetch external data **or to act on the user's repository (read, edit, diff, commit)**; otherwise answer directly. \
          After tool results, answer immediately. Be concise. \
          `brave_web_search` is only in the tool list when the user asked to search the open web (e.g. \"search the internet\", \"suche im Internet\", \"suche nach ...\") or a skill's `requires` matches this turn — otherwise prefer **`fetch`** on any `http(s)` URL you have (including from the user). \
          At most one `brave_web_search` per user message when it is available. \
-         After an allowed search, the host may auto-`fetch` several top result URLs — use those excerpts and end with **Quellen** listing every source URL.{fs_hint}{code_edit_hint}{mem_hint}{weather_directive}{skills_hint}"
+         After an allowed search, the host may auto-`fetch` several top result URLs — use those excerpts and end with **Quellen** listing every source URL.{fs_hint}{code_edit_hint}{scaffold_hint}{mem_hint}{weather_directive}{skills_hint}"
     )
 }
 
@@ -1196,8 +1219,8 @@ async fn run_model_turn(
     skills_slug_filter: Option<&[String]>,
 ) -> Result<TurnResult, String> {
     let plan_mode = *state.plan_mode.read().await;
-    let apply_fix_flow = message_implies_apply_repo_fix(user_message);
-    let max_steps = if apply_fix_flow {
+    let repo_write_followthrough = user_expects_repo_write_followthrough(user_message);
+    let max_steps = if repo_write_followthrough {
         MAX_STEPS_APPLY_FIX
     } else {
         MAX_STEPS
@@ -1213,7 +1236,9 @@ async fn run_model_turn(
         let reg = state.mcp.read().await;
         reg.tool_names().iter().any(|n| {
             let short = mcp_tool_base_name(n);
-            short.eq_ignore_ascii_case("edit_file") || short.eq_ignore_ascii_case("write_file")
+            short.eq_ignore_ascii_case("edit_file")
+                || short.eq_ignore_ascii_case("write_file")
+                || short.eq_ignore_ascii_case("create_directory")
         })
     };
 
@@ -1321,7 +1346,7 @@ async fn run_model_turn(
         let post_tool = tool_rounds > 0;
         let json_only_user_reply = !has_tools;
         let chat_opts =
-            chat_options_for_agent_step(post_tool, think, json_only_user_reply, apply_fix_flow);
+            chat_options_for_agent_step(post_tool, think, json_only_user_reply, repo_write_followthrough);
 
         let inject_post_tool = post_tool;
         if inject_post_tool {
@@ -1391,7 +1416,7 @@ async fn run_model_turn(
 
         if tool_calls.is_empty() {
             if !content.is_empty() {
-                if apply_fix_flow
+                if repo_write_followthrough
                     && !plan_mode
                     && registry_has_write_tool
                     && step + 1 < max_steps
@@ -1400,13 +1425,13 @@ async fn run_model_turn(
                     if let Some(arr) = messages.as_array_mut() {
                         arr.push(json!({
                             "role": "system",
-                            "content": APPLY_FIX_CONTINUE_AFTER_PROSE,
+                            "content": REPO_WRITE_CONTINUE_AFTER_PROSE,
                         }));
                     }
                     state
                         .emit_log(
                             "run",
-                            "agent: apply-fix continuation (prose-only while fix incomplete)",
+                            "agent: repo-write continuation (prose-only while incomplete)",
                         )
                         .await;
                     continue;
@@ -1424,7 +1449,7 @@ async fn run_model_turn(
                 r.model = model.clone();
                 return Ok(r);
             }
-            if apply_fix_flow
+            if repo_write_followthrough
                 && !plan_mode
                 && registry_has_write_tool
                 && step + 1 < max_steps
@@ -1433,13 +1458,13 @@ async fn run_model_turn(
                 if let Some(arr) = messages.as_array_mut() {
                     arr.push(json!({
                         "role": "system",
-                        "content": APPLY_FIX_CONTINUE_AFTER_EMPTY,
+                        "content": REPO_WRITE_CONTINUE_AFTER_EMPTY,
                     }));
                 }
                 state
                     .emit_log(
                         "run",
-                        "agent: apply-fix continuation (silent model step after tools)",
+                        "agent: repo-write continuation (silent model step after tools)",
                     )
                     .await;
                 continue;
@@ -1621,7 +1646,7 @@ async fn run_model_turn(
             .await;
         }
 
-        if apply_fix_flow
+        if repo_write_followthrough
             && !plan_mode
             && registry_has_write_tool
             && !fix_write_nudge_sent
@@ -1634,17 +1659,16 @@ async fn run_model_turn(
             if let Some(arr) = messages.as_array_mut() {
                 arr.push(json!({
                     "role": "system",
-                    "content": "FIX REQUIRED: The user asked to apply fixes (pre-commit, lint, format, etc.). \
-                     You have not called **`edit_file`** or **`write_file`** yet. Call one of them now with the \
-                     correct `/app/…` path and the actual file content or patch. Do not finish with only \
-                     **`git_diff`** / **`git_status`** / read tools — mutate files first, then **`git_diff`**."
+                    "content": "FIX REQUIRED: The user asked for **repository file or folder changes** (fixes, lint, pre-commit, **new files**, dot-directories like **`.pengine`**, etc.). \
+                     You have not called **`edit_file`**, **`write_file`**, or **`create_directory`** yet. Call one now with the \
+                     correct `/app/…` path. Do not finish with only **`git_diff`** / **`git_status`** / read or memory tools — create or patch paths on disk first."
                 }));
             }
             fix_write_nudge_sent = true;
             state
                 .emit_log(
                     "run",
-                    "agent: injected apply-fix write nudge (no write tool yet)",
+                    "agent: injected repo-write nudge (no fs write tool yet)",
                 )
                 .await;
         }
@@ -1958,6 +1982,14 @@ mod tests {
             "sure edit the files to fix lint"
         ));
         assert!(!message_implies_apply_repo_fix("what is the weather"));
+    }
+
+    #[test]
+    fn user_expects_repo_write_followthrough_includes_scaffold_phrases() {
+        assert!(user_expects_repo_write_followthrough(
+            "create a hidden .pengine folder for session notes"
+        ));
+        assert!(!user_expects_repo_write_followthrough("what is 2+2"));
     }
 
     #[test]

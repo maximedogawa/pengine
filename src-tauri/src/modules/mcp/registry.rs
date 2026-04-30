@@ -142,7 +142,8 @@ pub struct ToolContextSelection {
     pub active_count: usize,
     pub used_subset: bool,
     /// Why this shape was chosen: `full` = entire registry, `ranked` = keyword/recent top-K,
-    /// `core_no_signal` = no scores (e.g. non-English) — always-on + memory only.
+    /// `core_no_signal` = no scores (e.g. non-English) — always-on + memory + filesystem
+    /// mutation tools when the user message asks to create/write project files.
     pub routing: &'static str,
     pub select_ms: u64,
     pub high_risk_active: usize,
@@ -430,6 +431,70 @@ const ALWAYS_ON_TOOL_NAMES: &[&str] = &["fetch", "time"];
 /// After ranked tools are chosen, skip appending `fetch`/`time` when the user
 /// message is short, at least one tool already matched, and nothing suggests
 /// URL fetch, weather, or memory — so trivial native calls stay a single tool.
+/// User wants new or updated **repo files** (dot dirs, scaffolds) — not covered by code-review hints.
+pub(crate) fn message_suggests_filesystem_mutation(msg: &str) -> bool {
+    const HINTS: &[&str] = &[
+        ".pengine",
+        "hidden file",
+        "dotfile",
+        "dot file",
+        "dot-directory",
+        "dot directory",
+        "create a file",
+        "create file",
+        "new file",
+        "add a file",
+        "add file",
+        "write a file",
+        "write file",
+        "touch ",
+        "mkdir",
+        "make directory",
+        "create a directory",
+        "create directory",
+        "scaffold",
+        "try to invent",
+        "invent a",
+        "project metadata",
+        "metadata file",
+    ];
+    HINTS
+        .iter()
+        .any(|h| crate::modules::skills::service::user_message_needle_match(msg, h))
+}
+
+fn push_filesystem_mutation_tools(
+    tools: &[ToolDef],
+    selected: &mut Vec<ToolDef>,
+    seen: &mut HashSet<String>,
+) {
+    const NAMES: &[&str] = &[
+        "write_file",
+        "edit_file",
+        "create_directory",
+        "move_file",
+        "read_text_file",
+        "read_multiple_files",
+        "list_directory",
+        "list_directory_with_sizes",
+        "search_files",
+        "git_status",
+        "git_diff",
+        "git_diff_unstaged",
+        "git_diff_staged",
+    ];
+    for tool in tools {
+        let short = tool
+            .name
+            .rsplit_once('.')
+            .map(|(_, t)| t)
+            .unwrap_or(tool.name.as_str());
+        if NAMES.iter().any(|n| short.eq_ignore_ascii_case(n)) && seen.insert(tool.name.clone()) {
+            selected.push(tool.clone());
+        }
+    }
+}
+
 fn should_skip_always_on_tools(
     user_message: &str,
     recent_tool_names: &[String],
@@ -604,6 +669,9 @@ fn route_tools(
         ) {
             push_memory_server_tools(tools, memory_server, &mut selected, &mut seen);
         }
+        if message_suggests_filesystem_mutation(user_message) {
+            push_filesystem_mutation_tools(tools, &mut selected, &mut seen);
+        }
         selected.sort_by(|a, b| a.name.cmp(&b.name));
         return ToolRoutePlan::Subset {
             tools: selected,
@@ -722,7 +790,9 @@ fn score_tool_combined(
     if tool.name.eq_ignore_ascii_case("fetch") && message_suggests_url_fetch(user_message) {
         s += 22;
     }
-    if message_suggests_code_review_refactor(user_message) {
+    if message_suggests_code_review_refactor(user_message)
+        || message_suggests_filesystem_mutation(user_message)
+    {
         let short = tool
             .name
             .rsplit_once('.')
@@ -1142,6 +1212,63 @@ mod tests {
                 assert_eq!(sel.len(), 2);
                 assert!(sel.iter().any(|t| t.name == "fetch"));
                 assert!(sel.iter().any(|t| t.name == "time"));
+            }
+            super::ToolRoutePlan::FullCatalog => panic!("expected core subset"),
+        }
+    }
+
+    #[test]
+    fn routing_core_no_signal_includes_fs_writes_for_dot_project_metadata() {
+        let mut tools: Vec<ToolDef> = (0..12)
+            .map(|i| ToolDef {
+                server_name: "srv".into(),
+                name: format!("misc_{i}"),
+                description: None,
+                input_schema: json!({}),
+                direct_return: false,
+                category: None,
+                risk: ToolRisk::Low,
+            })
+            .collect();
+        for name in [
+            "fetch",
+            "time",
+            "write_file",
+            "edit_file",
+            "create_directory",
+            "read_text_file",
+            "list_directory",
+        ] {
+            tools.push(ToolDef {
+                server_name: "fm".into(),
+                name: name.into(),
+                description: None,
+                input_schema: json!({}),
+                direct_return: false,
+                category: None,
+                risk: ToolRisk::Low,
+            });
+        }
+        // Obscure tokens: either `filesystem_mutation` scoring yields a ranked subset, or (if every
+        // tool still scored 0) `core_no_signal` adds the same fs tools — both must expose writes.
+        let plan = super::route_tools(
+            &tools,
+            ".pengine dotfile scaffold xyzqqq unusedtokens",
+            &[],
+            None,
+            false,
+        );
+        match plan {
+            super::ToolRoutePlan::Subset {
+                tools: sel,
+                routing,
+            } => {
+                assert!(
+                    routing == "core_no_signal" || routing == "ranked",
+                    "unexpected routing {routing}: {sel:?}"
+                );
+                assert!(sel.iter().any(|t| t.name == "write_file"), "{sel:?}");
+                assert!(sel.iter().any(|t| t.name == "create_directory"), "{sel:?}");
             }
             super::ToolRoutePlan::FullCatalog => panic!("expected core subset"),
         }
