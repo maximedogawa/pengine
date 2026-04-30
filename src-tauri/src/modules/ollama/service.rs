@@ -197,6 +197,47 @@ pub async fn active_model() -> Result<String, String> {
         .ok_or_else(|| "no models pulled in ollama".to_string())
 }
 
+/// Load `model` in the Ollama daemon so `/api/ps` reports it (same as a first chat turn).
+///
+/// Uses a minimal `/api/chat` request with `num_predict: 1`. Large models may take
+/// minutes on first load; timeout is generous.
+pub async fn touch_activate_model(model: &str) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": " "}],
+        "stream": false,
+        "keep_alive": "30m",
+        "options": {
+            "num_predict": 1,
+            "num_ctx": 2048
+        }
+    });
+    let timeout = std::time::Duration::from_secs(300);
+    let resp = http_client()
+        .post(OLLAMA_CHAT_URL)
+        .json(&payload)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        return Err(if err.is_empty() {
+            format!("ollama chat HTTP {status}")
+        } else {
+            format!("ollama chat HTTP {status}: {err}")
+        });
+    }
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        if !err.is_empty() {
+            return Err(err.to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Detect cloud-side failures that warrant downgrading to a local model.
 /// Covers explicit rate limits (429 / "rate limit" / "quota"), upstream
 /// outages proxied as 5xx with the cloud's `ref: <uuid>` envelope, and the
@@ -378,18 +419,54 @@ fn extract_token_counts(body: &serde_json::Value) -> (Option<u64>, Option<u64>) 
     )
 }
 
+/// Per-request ceiling for `/api/chat`. Tool-heavy coding sessions carry large message JSON;
+/// local models can exceed two minutes on CPU — the previous 120s cap caused misleading failures
+/// (`error sending request for url`) while MCP tools had already succeeded.
+const OLLAMA_CHAT_REQUEST_TIMEOUT_SECS: u64 = 600;
+
+/// Maps reqwest errors into actionable CLI/agent text (daemon down vs timeout vs generic).
+fn explain_ollama_chat_transport_error(err_msg: &str) -> String {
+    let m = err_msg.to_ascii_lowercase();
+    if m.contains("connection refused")
+        || m.contains("connection reset")
+        || m.contains("failed to connect")
+    {
+        format!(
+            "cannot reach Ollama at {OLLAMA_CHAT_URL} ({err_msg}). Start the daemon: `ollama serve`"
+        )
+    } else if m.contains("timed out") || m.contains("timeout") {
+        format!(
+            "Ollama chat timed out after {OLLAMA_CHAT_REQUEST_TIMEOUT_SECS}s ({OLLAMA_CHAT_URL}). \
+Try a smaller model, shorter session, or ensure the GPU/CPU is not overloaded."
+        )
+    } else if m.contains("error sending request") {
+        // Reqwest’s generic text for several failures (incl. some timeouts / connection drops).
+        format!(
+            "Ollama chat request to {OLLAMA_CHAT_URL} failed ({err_msg}). \
+If the daemon is not running, start `ollama serve`. Otherwise retry — long tool-heavy prompts can exceed limits or overload Ollama."
+        )
+    } else {
+        format!("Ollama chat transport error ({OLLAMA_CHAT_URL}): {err_msg}")
+    }
+}
+
 async fn post_chat(
     payload: &serde_json::Value,
 ) -> Result<(reqwest::StatusCode, serde_json::Value), String> {
     let resp = http_client()
         .post(OLLAMA_CHAT_URL)
         .json(payload)
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(
+            OLLAMA_CHAT_REQUEST_TIMEOUT_SECS,
+        ))
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| explain_ollama_chat_transport_error(&e.to_string()))?;
     let status = resp.status();
-    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("ollama response JSON decode ({OLLAMA_CHAT_URL}): {e}"))?;
     Ok((status, body))
 }
 
@@ -418,4 +495,42 @@ fn extract_message(
         }
     }
     Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::explain_ollama_chat_transport_error;
+
+    #[test]
+    fn explain_maps_connection_refused() {
+        let s = explain_ollama_chat_transport_error(
+            "error sending request for url (http://localhost:11434/api/chat): connection refused",
+        );
+        assert!(s.contains("cannot reach Ollama"), "unexpected message: {s}");
+        assert!(s.contains("ollama serve"), "{s}");
+    }
+
+    #[test]
+    fn explain_maps_timeout() {
+        let s =
+            explain_ollama_chat_transport_error("operation timed out waiting for response body");
+        assert!(s.contains("timed out"), "{s}");
+        assert!(s.contains("600"), "{s}");
+    }
+
+    #[test]
+    fn explain_preserves_unknown_suffix() {
+        let raw = "something obscure xyz";
+        let s = explain_ollama_chat_transport_error(raw);
+        assert!(s.contains("transport error"), "{s}");
+        assert!(s.contains(raw), "{s}");
+    }
+
+    #[test]
+    fn explain_maps_reqwest_generic_sending_error() {
+        let raw = "error sending request for url (http://localhost:11434/api/chat)";
+        let s = explain_ollama_chat_transport_error(raw);
+        assert!(s.contains("Ollama chat request"), "{s}");
+        assert!(s.contains("ollama serve"), "{s}");
+    }
 }
