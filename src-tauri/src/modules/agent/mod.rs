@@ -572,13 +572,8 @@ fn tool_output_implies_unresolved_failure(body: &str) -> bool {
 /// Apply-fix turn is unfinished if we never wrote, or the **latest** tool payload still
 /// looks like a failing check (so we do not keep looping after a successful `edit_file`
 /// just because an older clippy blob remains earlier in `tool_results`).
-fn apply_fix_turn_unfinished(
-    tool_results: &[(String, String)],
-    all_invoked: &[String],
-) -> bool {
-    let wrote = all_invoked
-        .iter()
-        .any(|n| tool_invocation_writes_files(n));
+fn apply_fix_turn_unfinished(tool_results: &[(String, String)], all_invoked: &[String]) -> bool {
+    let wrote = all_invoked.iter().any(|n| tool_invocation_writes_files(n));
     let last_failed = tool_results
         .last()
         .is_some_and(|(_, body)| tool_output_implies_unresolved_failure(body));
@@ -1985,7 +1980,9 @@ mod tests {
         assert!(tool_output_implies_unresolved_failure(
             "husky - pre-commit script failed (code 101)"
         ));
-        assert!(!tool_output_implies_unresolved_failure("All checks passed."));
+        assert!(!tool_output_implies_unresolved_failure(
+            "All checks passed."
+        ));
     }
 
     #[test]
@@ -1994,7 +1991,10 @@ mod tests {
             "run_terminal_cmd".into(),
             "error: could not compile `pengine` (lib)".into(),
         );
-        assert!(apply_fix_turn_unfinished(std::slice::from_ref(&clippy), &[]));
+        assert!(apply_fix_turn_unfinished(
+            std::slice::from_ref(&clippy),
+            &[]
+        ));
         assert!(!apply_fix_turn_unfinished(
             &[clippy.clone(), ("edit_file".into(), "ok".into())],
             &["edit_file".into()]

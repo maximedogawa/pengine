@@ -714,10 +714,16 @@ mod tests {
     fn style_diff_line_tags_add_remove_and_hunk() {
         let add = super::style_diff_line("+foo");
         assert!(add.contains("+foo"));
-        assert!(add.contains("\x1b[48;2;20;45;28m"), "add line uses dark green bg");
+        assert!(
+            add.contains("\x1b[48;2;20;45;28m"),
+            "add line uses dark green bg"
+        );
         let del = super::style_diff_line("-bar");
         assert!(del.contains("-bar"));
-        assert!(del.contains("\x1b[48;2;45;22;24m"), "del line uses dark red bg");
+        assert!(
+            del.contains("\x1b[48;2;45;22;24m"),
+            "del line uses dark red bg"
+        );
         let hunk = super::style_diff_line("@@ -1,2 +1,3 @@");
         assert!(hunk.contains("@@"));
         assert!(hunk.contains("\x1b[1;38;2;242;204;96m"));
@@ -730,6 +736,9 @@ mod tests {
     fn style_diff_line_file_headers_not_confused_with_plus() {
         let hdr = super::style_diff_line("+++ b/src/main.rs");
         assert!(hdr.contains("+++"));
-        assert!(!hdr.contains("\x1b[48;2;20;45;28m"), "+++ must not use add-line bg");
+        assert!(
+            !hdr.contains("\x1b[48;2;20;45;28m"),
+            "+++ must not use add-line bg"
+        );
     }
 }
